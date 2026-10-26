@@ -342,13 +342,61 @@ def test_enrollment_flow(client):
     assert body["enrolled_count"] == 1
     assert body["absent_count"] == 1
 
-    # Re-enroll revives membership (history row is reused, not duplicated).
+    # Re-enroll creates a new period row (the first period is preserved).
     r = client.post(
         f"/api/courses/{cid}/students",
         json={"email": "stue@x.edu"},
         headers={"Authorization": tp},
     )
     assert r.status_code == 201
+
+    # --- boundary coverage -------------------------------------------------
+    # A student enrolled mid-session is on that session's roster.
+    _register(client, "student", "stuf@x.edu", roll_no="RF")
+    r = client.post(
+        "/api/sessions",
+        json={"course_id": cid, "window_minutes": 5},
+        headers={"Authorization": tp},
+    )
+    s3 = r.json()
+    r = client.post(
+        f"/api/courses/{cid}/students",
+        json={"email": "stuf@x.edu"},
+        headers={"Authorization": tp},
+    )
+    assert r.status_code == 201
+    r = client.get(f"/api/sessions/{s3['public_id']}/summary", headers={"Authorization": tp})
+    # stue (re-enrolled before s3 started) + stuf (enrolled during s3)
+    assert r.json()["enrolled_count"] == 2
+
+    # Legacy rows with enrolled_at NULL count as always enrolled.
+    _register(client, "student", "stug@x.edu", roll_no="RG")
+    from app.db import SessionLocal
+    from app.models import Enrollment, User
+
+    db = SessionLocal()
+    sid3 = db.query(User).filter_by(email="stug@x.edu").one().id
+    db.add(Enrollment(student_id=sid3, course_id=cid, enrolled_at=None))
+    db.commit()
+    db.close()
+    r = client.post(
+        "/api/sessions",
+        json={"course_id": cid, "window_minutes": 5},
+        headers={"Authorization": tp},
+    )
+    s4 = r.json()
+    r = client.get(f"/api/sessions/{s4['public_id']}/summary", headers={"Authorization": tp})
+    assert r.json()["enrolled_count"] == 3
+
+    # Re-enrollment must not erase attendance-eligible sessions from the
+    # first period: 'past' was covered by period 1, so it counts in history.
+    r = client.post(
+        f"/api/sessions/{past['public_id']}/close", headers={"Authorization": tp}
+    )
+    assert r.status_code == 200
+    r = client.get("/api/student/history", headers={"Authorization": ts})
+    hist = next(c for c in r.json()["courses"] if c["course_code"] == past["course_code"])
+    assert hist["sessions_total"] == 1
 
 
 def test_legacy_upload_urls_rewritten(client):

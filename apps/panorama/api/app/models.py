@@ -10,11 +10,11 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -71,8 +71,10 @@ class Course(Base):
 
 
 class Enrollment(Base):
+    """One row per membership period — re-enrollment inserts a new row so
+    earlier periods (and their attendance) are preserved."""
     __tablename__ = "enrollments"
-    __table_args__ = (UniqueConstraint("student_id", "course_id", name="uq_enrollment"),)
+    __table_args__ = (Index("ix_enrollment_pair", "student_id", "course_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)

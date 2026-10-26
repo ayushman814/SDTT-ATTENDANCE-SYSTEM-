@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import secrets
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -93,14 +92,13 @@ def main() -> int:
                 select(Enrollment).where(
                     Enrollment.student_id == stu.id,
                     Enrollment.course_id == course.id,
+                    Enrollment.unenrolled_at.is_(None),
                 )
             )
             if row is None:
+                # Insert a fresh period row — earlier (possibly soft-deleted)
+                # periods stay intact for historical rosters.
                 db.add(Enrollment(student_id=stu.id, course_id=course.id))
-            elif row.unenrolled_at is not None:
-                # Revive a soft-deleted enrollment so reseeding stays usable.
-                row.enrolled_at = datetime.now(timezone.utc)
-                row.unenrolled_at = None
 
         db.commit()
         print("Seeded:")

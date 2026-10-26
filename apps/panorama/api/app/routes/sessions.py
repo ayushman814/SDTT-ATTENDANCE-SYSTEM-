@@ -176,19 +176,17 @@ def enroll_student(
     )
     if student is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No student with that email")
-    exists = db.scalar(
+    active = db.scalar(
         select(Enrollment).where(
-            Enrollment.student_id == student.id, Enrollment.course_id == course.id
+            Enrollment.student_id == student.id,
+            Enrollment.course_id == course.id,
+            Enrollment.unenrolled_at.is_(None),
         )
     )
-    if exists is not None and exists.unenrolled_at is None:
+    if active is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Student already enrolled")
-    if exists is not None:
-        # re-enroll: restart the membership period
-        exists.enrolled_at = utcnow()
-        exists.unenrolled_at = None
-    else:
-        db.add(Enrollment(student_id=student.id, course_id=course.id))
+    # A new period row: past enrollments stay intact for historical rosters.
+    db.add(Enrollment(student_id=student.id, course_id=course.id))
     audit(
         db, "course.enrolled", "course", course.id, actor_id=prof.id,
         detail={"student_id": student.id, "email": student.email},

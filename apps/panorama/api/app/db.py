@@ -91,3 +91,43 @@ def _apply_additive_migrations() -> None:
                 conn.execute(
                     text(f"ALTER TABLE enrollments ADD COLUMN unenrolled_at {dt_type}")
                 )
+        # Enrollment is one row per membership period now — drop the legacy
+        # (student_id, course_id) unique constraint when upgrading old DBs.
+        if engine.dialect.name == "sqlite":
+            with engine.begin() as conn:
+                ddl = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE name='enrollments'")
+                ).scalar()
+                if ddl and "uq_enrollment" in ddl:
+                    conn.execute(
+                        text(
+                            "CREATE TABLE enrollments_new ("
+                            "id INTEGER PRIMARY KEY, "
+                            "student_id INTEGER NOT NULL REFERENCES users(id), "
+                            "course_id INTEGER NOT NULL REFERENCES courses(id), "
+                            "enrolled_at DATETIME, "
+                            "unenrolled_at DATETIME)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT INTO enrollments_new "
+                            "SELECT id, student_id, course_id, enrolled_at, unenrolled_at "
+                            "FROM enrollments"
+                        )
+                    )
+                    conn.execute(text("DROP TABLE enrollments"))
+                    conn.execute(
+                        text("ALTER TABLE enrollments_new RENAME TO enrollments")
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE INDEX ix_enrollment_pair "
+                            "ON enrollments(student_id, course_id)"
+                        )
+                    )
+        else:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE enrollments DROP CONSTRAINT IF EXISTS uq_enrollment")
+                )

@@ -109,6 +109,7 @@ def student_active_sessions(user: User = Depends(current_user), db: Session = De
             Enrollment.unenrolled_at.is_(None),
             ClassSession.status == SessionStatus.active,
         )
+        .distinct()
         .order_by(ClassSession.end_time)
     ).all()
     out = []
