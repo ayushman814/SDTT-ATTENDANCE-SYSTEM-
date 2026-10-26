@@ -47,8 +47,6 @@ def init_db() -> None:
 
 def _apply_additive_migrations() -> None:
     """Idempotent column additions/rewrites for older database revisions."""
-    from datetime import datetime, timezone
-
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
@@ -75,12 +73,21 @@ def _apply_additive_migrations() -> None:
             )
     if "enrollments" in tables:
         cols = {c["name"] for c in insp.get_columns("enrollments")}
+        # DATETIME is SQLite syntax; PostgreSQL needs TIMESTAMP WITH TIME ZONE.
+        dt_type = (
+            "TIMESTAMP WITH TIME ZONE"
+            if engine.dialect.name == "postgresql"
+            else "DATETIME"
+        )
         with engine.begin() as conn:
             if "enrolled_at" not in cols:
-                conn.execute(text("ALTER TABLE enrollments ADD COLUMN enrolled_at DATETIME"))
                 conn.execute(
-                    text("UPDATE enrollments SET enrolled_at = :now WHERE enrolled_at IS NULL"),
-                    {"now": datetime.now(timezone.utc)},
+                    text(f"ALTER TABLE enrollments ADD COLUMN enrolled_at {dt_type}")
                 )
+                # Existing rows keep NULL on purpose — session_roster treats
+                # NULL as the legacy 'always enrolled' sentinel; backfilling
+                # now() would erase them from all past-session rosters.
             if "unenrolled_at" not in cols:
-                conn.execute(text("ALTER TABLE enrollments ADD COLUMN unenrolled_at DATETIME"))
+                conn.execute(
+                    text(f"ALTER TABLE enrollments ADD COLUMN unenrolled_at {dt_type}")
+                )

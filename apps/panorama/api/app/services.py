@@ -116,29 +116,37 @@ def enrolled_students(db: Session, course_id: int) -> list[User]:
     return list(db.scalars(select(User).where(User.id.in_(ids))).all())
 
 
-def session_roster(db: Session, session: ClassSession) -> list[User]:
-    """Students whose enrollment covered the session's start time.
+def membership_overlaps(
+    enrolled_at: datetime | None,
+    unenrolled_at: datetime | None,
+    start: datetime,
+    end: datetime,
+) -> bool:
+    """True when an enrollment period overlaps the [start, end] window.
 
-    Attendance is recorded against the roster as it stood when the session
-    ran — later enrollment changes must not rewrite past summaries/exports.
+    NULL enrolled_at is the legacy sentinel for 'always enrolled'.
     """
-    start = session.start_time
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
+    ea = as_utc(enrolled_at)
+    ua = as_utc(unenrolled_at)
+    start, end = as_utc(start), as_utc(end)
+    return (ea is None or ea <= end) and (ua is None or ua > start)
+
+
+def session_roster(db: Session, session: ClassSession) -> list[User]:
+    """Students whose enrollment overlapped the session's window.
+
+    Attendance is recorded against the roster as it stood while the session
+    ran — later enrollment changes must not rewrite past summaries/exports,
+    and students enrolled mid-session (who could legitimately attend) count.
+    """
     rows = db.scalars(
         select(Enrollment).where(Enrollment.course_id == session.course_id)
     ).all()
-    ids = []
-    for e in rows:
-        # Legacy rows without a timestamp count as always enrolled.
-        ea = e.enrolled_at
-        if ea is not None and ea.tzinfo is None:
-            ea = ea.replace(tzinfo=timezone.utc)
-        ua = e.unenrolled_at
-        if ua is not None and ua.tzinfo is None:
-            ua = ua.replace(tzinfo=timezone.utc)
-        if (ea is None or ea <= start) and (ua is None or ua > start):
-            ids.append(e.student_id)
+    ids = [
+        e.student_id
+        for e in rows
+        if membership_overlaps(e.enrolled_at, e.unenrolled_at, session.start_time, session.end_time)
+    ]
     if not ids:
         return []
     return list(db.scalars(select(User).where(User.id.in_(ids))).all())

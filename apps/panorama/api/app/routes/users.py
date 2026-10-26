@@ -23,7 +23,15 @@ from ..models import (
 from ..routes.auth import user_out
 from ..schemas import HistoryCourseOut, StudentHistoryOut, UserOut
 from ..security import current_user
-from ..services import audit, latest_submissions, maybe_close, reason_text, submission_out
+from ..services import (
+    as_utc,
+    audit,
+    latest_submissions,
+    maybe_close,
+    membership_overlaps,
+    reason_text,
+    submission_out,
+)
 from ..vision import get_engine
 
 router = APIRouter(tags=["users"])
@@ -119,8 +127,8 @@ def student_active_sessions(user: User = Depends(current_user), db: Session = De
                 "public_id": s.public_id,
                 "course_code": course.code,
                 "course_name": course.name,
-                "start_time": s.start_time.isoformat(),
-                "end_time": s.end_time.isoformat(),
+                "start_time": as_utc(s.start_time).isoformat(),
+                "end_time": as_utc(s.end_time).isoformat(),
                 "geo_enabled": s.geo_lat is not None,
                 "my_status": mine.status.value if mine else None,
                 "my_reason": reason_text(mine.reason) if mine else None,
@@ -133,11 +141,12 @@ def student_active_sessions(user: User = Depends(current_user), db: Session = De
 def student_history(user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.role != Role.student:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Requires student role")
-    courses = db.scalars(
-        select(Course).join(Enrollment).where(Enrollment.student_id == user.id)
+    enrollments = db.scalars(
+        select(Enrollment).where(Enrollment.student_id == user.id)
     ).all()
     course_rows: list[HistoryCourseOut] = []
-    for course in courses:
+    for enr in enrollments:
+        course = db.get(Course, enr.course_id)
         sessions = db.scalars(
             select(ClassSession).where(ClassSession.course_id == course.id)
         ).all()
@@ -145,6 +154,12 @@ def student_history(user: User = Depends(current_user), db: Session = Depends(ge
         for s in sessions:
             s = maybe_close(db, s)
             if s.status != SessionStatus.closed:
+                continue
+            # Count only sessions the student could actually have attended —
+            # the same membership-window overlap used for rosters/exports.
+            if not membership_overlaps(
+                enr.enrolled_at, enr.unenrolled_at, s.start_time, s.end_time
+            ):
                 continue
             total += 1
             latest = [
