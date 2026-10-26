@@ -1,0 +1,133 @@
+"""Database engine/session helpers (SQLAlchemy 2.x).
+
+SQLite is the development default; set PANORAMA_DATABASE_URL to a PostgreSQL
+DSN for deployment — the same models work on both.
+"""
+from __future__ import annotations
+
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from .config import DATABASE_URL
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
+
+if DATABASE_URL.startswith("sqlite"):
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_fk_on(dbapi_conn, _):  # pragma: no cover - trivial
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, class_=Session)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db() -> None:
+    from . import models  # noqa: F401  (register models)
+
+    Base.metadata.create_all(engine)
+    _apply_additive_migrations()
+
+
+def _apply_additive_migrations() -> None:
+    """Idempotent column additions/rewrites for older database revisions."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    tables = insp.get_table_names()
+    if "submissions" in tables:
+        cols = {c["name"] for c in insp.get_columns("submissions")}
+        with engine.begin() as conn:
+            if "selfie_url" not in cols:
+                conn.execute(text("ALTER TABLE submissions ADD COLUMN selfie_url VARCHAR(500)"))
+            # image URLs are now served under the authenticated /api prefix
+            conn.execute(
+                text(
+                    "UPDATE submissions SET image_url = '/api' || image_url"
+                    " WHERE image_url LIKE '/uploads/%'"
+                )
+            )
+    if "users" in tables:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE users SET face_photo_url = '/api' || face_photo_url"
+                    " WHERE face_photo_url LIKE '/uploads/%'"
+                )
+            )
+    if "enrollments" in tables:
+        cols = {c["name"] for c in insp.get_columns("enrollments")}
+        # DATETIME is SQLite syntax; PostgreSQL needs TIMESTAMP WITH TIME ZONE.
+        dt_type = (
+            "TIMESTAMP WITH TIME ZONE"
+            if engine.dialect.name == "postgresql"
+            else "DATETIME"
+        )
+        with engine.begin() as conn:
+            if "enrolled_at" not in cols:
+                conn.execute(
+                    text(f"ALTER TABLE enrollments ADD COLUMN enrolled_at {dt_type}")
+                )
+                # Existing rows keep NULL on purpose — session_roster treats
+                # NULL as the legacy 'always enrolled' sentinel; backfilling
+                # now() would erase them from all past-session rosters.
+            if "unenrolled_at" not in cols:
+                conn.execute(
+                    text(f"ALTER TABLE enrollments ADD COLUMN unenrolled_at {dt_type}")
+                )
+        # Enrollment is one row per membership period now — drop the legacy
+        # (student_id, course_id) unique constraint when upgrading old DBs.
+        if engine.dialect.name == "sqlite":
+            with engine.begin() as conn:
+                ddl = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE name='enrollments'")
+                ).scalar()
+                if ddl and "uq_enrollment" in ddl:
+                    conn.execute(
+                        text(
+                            "CREATE TABLE enrollments_new ("
+                            "id INTEGER PRIMARY KEY, "
+                            "student_id INTEGER NOT NULL REFERENCES users(id), "
+                            "course_id INTEGER NOT NULL REFERENCES courses(id), "
+                            "enrolled_at DATETIME, "
+                            "unenrolled_at DATETIME)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT INTO enrollments_new "
+                            "SELECT id, student_id, course_id, enrolled_at, unenrolled_at "
+                            "FROM enrollments"
+                        )
+                    )
+                    conn.execute(text("DROP TABLE enrollments"))
+                    conn.execute(
+                        text("ALTER TABLE enrollments_new RENAME TO enrollments")
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE INDEX ix_enrollment_pair "
+                            "ON enrollments(student_id, course_id)"
+                        )
+                    )
+        else:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE enrollments DROP CONSTRAINT IF EXISTS uq_enrollment")
+                )
