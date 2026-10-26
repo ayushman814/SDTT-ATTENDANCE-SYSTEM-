@@ -145,9 +145,14 @@ def student_history(user: User = Depends(current_user), db: Session = Depends(ge
     enrollments = db.scalars(
         select(Enrollment).where(Enrollment.student_id == user.id)
     ).all()
-    course_rows: list[HistoryCourseOut] = []
+    # One row per course — a re-enrolled student has several period rows for
+    # the same course, and each session counts once if any period overlaps it.
+    periods_by_course: dict[int, list[Enrollment]] = {}
     for enr in enrollments:
-        course = db.get(Course, enr.course_id)
+        periods_by_course.setdefault(enr.course_id, []).append(enr)
+    course_rows: list[HistoryCourseOut] = []
+    for course_id, periods in periods_by_course.items():
+        course = db.get(Course, course_id)
         sessions = db.scalars(
             select(ClassSession).where(ClassSession.course_id == course.id)
         ).all()
@@ -158,8 +163,11 @@ def student_history(user: User = Depends(current_user), db: Session = Depends(ge
                 continue
             # Count only sessions the student could actually have attended —
             # the same membership-window overlap used for rosters/exports.
-            if not membership_overlaps(
-                enr.enrolled_at, enr.unenrolled_at, s.start_time, s.end_time
+            if not any(
+                membership_overlaps(
+                    p.enrolled_at, p.unenrolled_at, s.start_time, s.end_time
+                )
+                for p in periods
             ):
                 continue
             total += 1

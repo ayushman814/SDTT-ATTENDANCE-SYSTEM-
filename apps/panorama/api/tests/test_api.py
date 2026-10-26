@@ -395,8 +395,10 @@ def test_enrollment_flow(client):
     )
     assert r.status_code == 200
     r = client.get("/api/student/history", headers={"Authorization": ts})
-    hist = next(c for c in r.json()["courses"] if c["course_code"] == past["course_code"])
-    assert hist["sessions_total"] == 1
+    matching = [c for c in r.json()["courses"] if c["course_code"] == past["course_code"]]
+    # one history row per course even with multiple enrollment periods
+    assert len(matching) == 1
+    assert matching[0]["sessions_total"] == 1
 
 
 def test_legacy_upload_urls_rewritten(client):
