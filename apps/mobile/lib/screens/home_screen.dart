@@ -308,7 +308,17 @@ class TeacherHome extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text('Attendance window'),
-              Wrap(spacing: 6, children: [10, 30, 60, 120].map((minutes) => ChoiceChip(label: Text('$minutes min'), selected: durationMinutes == minutes, onSelected: (_) => setDialogState(() => durationMinutes = minutes)).toList()),
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (final minutes in [10, 30, 60, 120])
+                    ChoiceChip(
+                      label: Text('$minutes min'),
+                      selected: durationMinutes == minutes,
+                      onSelected: (_) => setDialogState(() => durationMinutes = minutes),
+                    ),
+                ],
+              ),
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: const Text('Scene verification settings'),
