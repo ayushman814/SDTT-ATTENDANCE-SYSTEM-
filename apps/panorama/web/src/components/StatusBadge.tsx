@@ -3,6 +3,7 @@ const STYLES: Record<string, string> = {
   rejected: "bg-red-50 text-red-700 ring-red-200",
   pending_review: "bg-amber-50 text-amber-800 ring-amber-200",
   processing: "bg-slate-100 text-slate-600 ring-slate-200",
+  closed: "bg-slate-100 text-slate-600 ring-slate-200",
 };
 
 const LABELS: Record<string, string> = {
@@ -10,6 +11,7 @@ const LABELS: Record<string, string> = {
   rejected: "Rejected",
   pending_review: "Needs review",
   processing: "Processing",
+  closed: "Closed",
 };
 
 export default function StatusBadge({ status }: { status: string }) {

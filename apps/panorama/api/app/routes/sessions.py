@@ -28,6 +28,7 @@ from ..services import (
     latest_submissions,
     maybe_close,
     new_public_id,
+    reason_text,
     session_out,
     submission_out,
     utcnow,
@@ -189,7 +190,7 @@ def export_csv(public_id: str, prof: User = Depends(require_professor), db: Sess
                 student.roll_no or "",
                 sub.status.value,
                 sub.submitted_at.isoformat(),
-                sub.reason or "",
+                reason_text(sub.reason) or "",
             ])
     audit(db, "session.exported", "session", s.public_id, actor_id=prof.id)
     db.commit()

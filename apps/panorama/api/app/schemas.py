@@ -68,6 +68,7 @@ class SubmissionOut(BaseModel):
     submitted_at: datetime
     status: str
     reason: Optional[str]
+    reason_code: Optional[str] = None
     scores: Optional[dict[str, Any]]
 
 

@@ -18,7 +18,13 @@ from .models import (
     SubmissionStatus,
     User,
 )
+from .pipeline import REASONS
 from .schemas import SessionOut, SubmissionOut
+
+
+def reason_text(reason: str | None) -> str | None:
+    """Human-readable text for a stored reason code."""
+    return REASONS.get(reason, reason) if reason else None
 
 
 def utcnow() -> datetime:
@@ -74,7 +80,8 @@ def submission_out(sub: Submission, student: User) -> SubmissionOut:
         image_url=sub.image_url,
         submitted_at=sub.submitted_at,
         status=sub.status.value,
-        reason=sub.reason,
+        reason=reason_text(sub.reason),
+        reason_code=sub.reason,
         scores=sub.scores,
     )
 

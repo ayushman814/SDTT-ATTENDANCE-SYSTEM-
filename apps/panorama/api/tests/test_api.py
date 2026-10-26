@@ -232,7 +232,8 @@ def test_override(client, engine, make_panorama):
         headers={"Authorization": f"Bearer {ts}"},
     )
     assert r.json()["status"] == "rejected"
-    assert r.json()["reason"] == "lecturer_not_found"
+    assert r.json()["reason_code"] == "lecturer_not_found"
+    assert r.json()["reason"] == "The lecturer was not found in the panorama."
     sub_id = r.json()["id"]
 
     # professor overrides to present

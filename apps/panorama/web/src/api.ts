@@ -118,5 +118,16 @@ export const api = {
   override: (token: string, submissionId: number, status: "present" | "rejected", reason?: string) =>
     json<import("./types").Submission>(`/api/submissions/${submissionId}/override`, "PATCH", { status, reason }, token),
 
-  exportUrl: (publicId: string) => `${API}/api/sessions/${publicId}/export.csv`,
+  exportCsv: async (token: string, publicId: string) => {
+    const res = await fetch(`${API}/api/sessions/${publicId}/export.csv`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new ApiError(res.status, "Export failed");
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `attendance-${publicId}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };

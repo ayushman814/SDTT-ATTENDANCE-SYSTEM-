@@ -163,7 +163,7 @@ export default function ProfessorHome() {
                     {s.status === "active" ? (
                       <Countdown endTime={s.end_time} />
                     ) : (
-                      <StatusBadge status="processing" />
+                      <StatusBadge status={s.status} />
                     )}
                   </div>
                 </Link>

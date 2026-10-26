@@ -21,7 +21,7 @@ from ..models import (
 from ..routes.auth import user_out
 from ..schemas import HistoryCourseOut, StudentHistoryOut, UserOut
 from ..security import current_user
-from ..services import audit, latest_submissions, maybe_close, submission_out
+from ..services import audit, latest_submissions, maybe_close, reason_text, submission_out
 from ..vision import get_engine
 
 router = APIRouter(tags=["users"])
@@ -104,7 +104,7 @@ def student_active_sessions(user: User = Depends(current_user), db: Session = De
                 "end_time": s.end_time.isoformat(),
                 "geo_enabled": s.geo_lat is not None,
                 "my_status": mine.status.value if mine else None,
-                "my_reason": mine.reason if mine else None,
+                "my_reason": reason_text(mine.reason) if mine else None,
             }
         )
     return {"sessions": out}
