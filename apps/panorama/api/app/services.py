@@ -31,6 +31,14 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(dt: datetime | None) -> datetime | None:
+    """SQLite round-trips naive datetimes; re-attach UTC before serialization
+    so clients don't parse the timestamp as their local time."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def audit(db: Session, action: str, entity: str, entity_id, actor_id=None, detail=None) -> None:
     db.add(
         AuditLog(
@@ -63,8 +71,8 @@ def session_out(session: ClassSession, course: Course, professor: User) -> Sessi
         course_name=course.name,
         course_code=course.code,
         professor_name=professor.name,
-        start_time=session.start_time,
-        end_time=session.end_time,
+        start_time=as_utc(session.start_time),
+        end_time=as_utc(session.end_time),
         status=session.status.value,
         geo_enabled=session.geo_lat is not None and session.geo_lng is not None,
     )
@@ -78,7 +86,7 @@ def submission_out(sub: Submission, student: User) -> SubmissionOut:
         student_name=student.name,
         roll_no=student.roll_no,
         image_url=sub.image_url,
-        submitted_at=sub.submitted_at,
+        submitted_at=as_utc(sub.submitted_at),
         status=sub.status.value,
         reason=reason_text(sub.reason),
         reason_code=sub.reason,
