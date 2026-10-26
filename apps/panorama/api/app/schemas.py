@@ -13,6 +13,7 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     roll_no: Optional[str] = Field(default=None, max_length=40)
+    invite_code: Optional[str] = Field(default=None, max_length=128)
     consent: bool  # face-data consent is mandatory
 
 
@@ -35,6 +36,10 @@ class UserOut(BaseModel):
     email: str
     roll_no: Optional[str] = None
     face_enrolled: bool
+
+
+class EnrollIn(BaseModel):
+    email: EmailStr
 
 
 class SessionCreateIn(BaseModel):

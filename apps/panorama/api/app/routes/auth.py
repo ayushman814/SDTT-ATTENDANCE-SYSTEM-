@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import PROFESSOR_INVITE_CODE
 from ..db import get_db
 from ..models import Role, User
 from ..schemas import LoginIn, RegisterIn, TokenOut, UserOut
@@ -43,6 +44,16 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     role = Role(body.role)
     if role == Role.student and not body.roll_no:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="roll_no is required for students")
+    # Professor accounts carry write access over attendance — self-registration
+    # requires the deployment's invite code (PANORAMA_PROFESSOR_INVITE_CODE).
+    if role == Role.professor:
+        if not PROFESSOR_INVITE_CODE:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="Professor registration is disabled (no invite code configured)",
+            )
+        if body.invite_code != PROFESSOR_INVITE_CODE:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invalid professor invite code")
     email = body.email.strip().lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Email already registered")

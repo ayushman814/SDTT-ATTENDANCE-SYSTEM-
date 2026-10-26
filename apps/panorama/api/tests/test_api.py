@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 os.environ.setdefault("PANORAMA_JWT_SECRET", "test-secret")
+os.environ.setdefault("PANORAMA_PROFESSOR_INVITE_CODE", "test-invite")
 
 from app.main import app  # noqa: E402
 
@@ -34,6 +35,7 @@ def _register(client, role, email, name="T", roll_no=None, password="password123
             "name": name,
             "password": password,
             "roll_no": roll_no,
+            "invite_code": "test-invite" if role == "professor" else None,
             "consent": True,
         },
     )
@@ -73,6 +75,27 @@ def test_register_and_role_isolation(client):
 
     # no token → 401
     assert client.get("/api/me").status_code == 401
+
+
+def test_professor_registration_requires_invite(client):
+    # no invite code → rejected
+    r = client.post(
+        "/api/auth/register",
+        json={
+            "role": "professor", "email": "noinv@x.edu", "name": "N",
+            "password": "password123", "consent": True,
+        },
+    )
+    assert r.status_code == 403
+    # wrong code → rejected
+    r = client.post(
+        "/api/auth/register",
+        json={
+            "role": "professor", "email": "badinv@x.edu", "name": "N",
+            "password": "password123", "invite_code": "wrong", "consent": True,
+        },
+    )
+    assert r.status_code == 403
 
 
 def test_registration_requires_consent(client):

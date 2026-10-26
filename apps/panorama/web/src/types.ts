@@ -65,6 +65,13 @@ export interface SessionListItem extends SessionInfo {
   submission_count: number;
 }
 
+export interface RosterStudent {
+  id: number;
+  name: string;
+  email: string;
+  roll_no: string | null;
+}
+
 export interface CourseHistory {
   course_code: string;
   course_name: string;

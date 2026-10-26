@@ -5,10 +5,10 @@ Two new apps under `apps/panorama/`; the existing prototype (`backend/`,
 
 ```
 apps/panorama/web  (React+TS+Vite+Tailwind PWA)
-        │  REST /api/*  (+ /uploads/* images)
+        │  REST /api/*  (images via authenticated /api/uploads/*)
         ▼
 apps/panorama/api  (FastAPI + SQLAlchemy + OpenCV)
-   app/routes/*  — auth, users, sessions, submissions
+   app/routes/*  — auth, users, sessions, submissions, uploads
    app/pipeline.py — the verification pipeline (core logic)
    app/vision.py   — YuNet detector + SFace recognizer (lazy singleton)
    app/imaging.py  — decode, dHash, blur, moire FFT, EXIF
@@ -20,13 +20,16 @@ apps/panorama/api  (FastAPI + SQLAlchemy + OpenCV)
 ## Flow
 
 1. Role landing → role-aware register/login (JWT, bcrypt; a student cannot
-   enter through the professor flow).
+   enter through the professor flow; professor registration requires the
+   `PANORAMA_PROFESSOR_INVITE_CODE` invite code).
 2. First login → `POST /me/face` enrolls the reference face: largest detected
    face → 128-dim SFace embedding stored on the user row (+ photo kept for
    audit/deletion).
 3. Professor starts a session: server stamps `start_time`/`end_time` from its
    own clock. `maybe_close` flips status to `closed` on any read once expired,
-   so the window cannot be extended client-side.
+   so the window cannot be extended client-side. Professors enroll students
+   per course (`/courses/{id}/students`) — a course's sessions are only
+   visible and submittable to its roster.
 4. Student marks attendance with the camera only — there is no file upload.
    The app films the student on the front camera for 8 seconds (the selfie),
    switches to the back camera, and guides a ~180° sweep across the room while
@@ -48,7 +51,7 @@ apps/panorama/api  (FastAPI + SQLAlchemy + OpenCV)
 | 2 | width/height ≥ `panorama_min_ratio` (2.0) | `not_a_panorama` | — |
 | 3 | dHash vs every earlier submission ≤ `phash_hamming_max` (8) | `duplicate_image` | — |
 | 4 | Laplacian variance ≥ `blur_min_variance` (60) | `image_too_blurry` | — |
-| 5 | EXIF DateTimeOriginal, if present, ≤ 30 min old | `stale_capture` | — |
+| 5 | EXIF DateTimeOriginal+offset on every source frame, if present, ≤ 30 min old (naive EXIF — no offset — is not rejected) | `stale_capture` | — |
 | 6 | FFT peak/median in HF ring ≤ `moire_peak_ratio_max` (500) | — | `screen_moire_suspect` |
 | 6b | Live selfie: blur + moire floors | `image_too_blurry` | `screen_moire_suspect` |
 | 7 | ≥1 face detected (YuNet score ≥ 0.6) | `no_face_detected` | — |
@@ -78,8 +81,10 @@ Pass all → `present`. Every score is persisted on the submission for audit.
   FFT peak hundreds of times the ring median (≈1600 in tests vs ≈50–70 for
   natural images). Threshold 500 is deliberately loose; borderline cases go
   to review, not rejection.
-- **EXIF**: only penalizes a *stale* timestamp (>30 min); missing EXIF is
-  tolerated since phone panoramas and shares strip it.
+- **EXIF**: only penalizes a *stale* timestamp (>30 min); the freshness check
+  requires `OffsetTimeOriginal` — a timezone-naive `DateTimeOriginal` would
+  misjudge local camera clocks, so it is skipped rather than trusted. Every
+  uploaded frame and the selfie are checked before re-encoding.
 - **Neighbour band** 2–45% of image width: the neighbour must sit beside the
   student, not be the lecturer at the far end of the sweep.
 
@@ -106,6 +111,8 @@ Pass all → `present`. Every score is persisted on the submission for audit.
 ## Privacy
 
 Consent checkbox is mandatory at registration (`consent_at` stamped).
-`DELETE /me/face` erases embedding + photo. Uploaded panoramas are re-encoded
-without metadata before storage; EXIF is only read for the timestamp check.
-Server time is the only clock consulted.
+`DELETE /me/face` erases embedding, reference photo, and all captured
+selfies. Uploaded images are re-encoded without metadata before storage and
+are only reachable through the authenticated `/api/uploads/...` route
+(professor sees their sessions' images; students only their own). EXIF is
+only read for the timestamp check. Server time is the only clock consulted.

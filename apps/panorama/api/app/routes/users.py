@@ -54,7 +54,7 @@ def enroll_face(
     path = FACES_DIR / f"user_{user.id}.jpg"
     path.write_bytes(imaging.strip_metadata(data))
     user.face_embedding = embedding.astype("float32").tobytes()
-    user.face_photo_url = f"/uploads/faces/{path.name}"
+    user.face_photo_url = f"/api/uploads/faces/{path.name}"
     audit(db, "user.face_enrolled", "user", user.id, actor_id=user.id)
     db.commit()
     return user_out(user)
@@ -62,13 +62,20 @@ def enroll_face(
 
 @router.delete("/me/face", status_code=204)
 def delete_face_data(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Privacy: erase the stored embedding and reference photo."""
+    """Privacy: erase the stored embedding, reference photo, and captured selfies."""
     user.face_embedding = None
     if user.face_photo_url:
-        p = UPLOAD_DIR.parent / user.face_photo_url.lstrip("/")
+        p = UPLOAD_DIR.parent / user.face_photo_url.removeprefix("/api/")
         if p.exists():
             p.unlink()
     user.face_photo_url = None
+    # Captured selfies are part of the user's face data — remove them too.
+    for sub in db.scalars(select(Submission).where(Submission.student_id == user.id)).all():
+        if sub.selfie_url:
+            p = UPLOAD_DIR.parent / sub.selfie_url.removeprefix("/api/")
+            if p.exists():
+                p.unlink()
+            sub.selfie_url = None
     audit(db, "user.face_deleted", "user", user.id, actor_id=user.id)
     db.commit()
     return None

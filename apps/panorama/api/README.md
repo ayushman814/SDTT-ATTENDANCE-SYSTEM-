@@ -17,19 +17,26 @@ python seed.py                            # demo professor + 5 students + CS-101
 uvicorn app.main:app --reload --port 8100
 ```
 
-The API is under `/api`; uploaded panoramas and reference photos are served
-from `/uploads` with metadata stripped. All verification thresholds live in one
-file: `panorama.config.yaml`.
+The API is under `/api`; uploaded panoramas, selfies, and reference photos are
+served through `GET /api/uploads/...` behind authentication (professors see
+their sessions' images, students only their own) — never anonymous. All
+verification thresholds live in one file: `panorama.config.yaml`.
 
 ## Roles and flow
 
 - `POST /api/auth/register`, `POST /api/auth/login` are role-aware: a student
-  cannot log in through the professor flow. JWT bearer + bcrypt.
+  cannot log in through the professor flow. JWT bearer + bcrypt. Professor
+  registration additionally requires the `PANORAMA_PROFESSOR_INVITE_CODE`
+  invite code.
 - `POST /api/me/face` enrolls the reference face (first login). `DELETE
-  /api/me/face` erases embedding and photo (privacy opt-out).
+  /api/me/face` erases embedding, reference photo, and captured selfies
+  (privacy opt-out).
 - Professor: `POST /api/sessions` (course + window minutes), live
   `GET /api/sessions/{id}/summary`, `POST /api/sessions/{id}/close`,
   `GET /api/sessions/{id}/export.csv`, `PATCH /api/submissions/{id}/override`.
+  Roster management: `GET /api/professor/students`,
+  `GET/POST /api/courses/{id}/students` (enroll by student email),
+  `DELETE /api/courses/{id}/students/{student_id}`.
 - Student: `GET /api/student/sessions/active`, `POST
   /api/sessions/{id}/submit` (multipart `selfie` + repeated `frames` fields —
   live capture only, no manual file upload; optional `geo_lat`/`geo_lng`),
@@ -48,8 +55,11 @@ optional geofence → PRESENT.
 
 ## Demo accounts (after `python seed.py`)
 
-- Professor: `prof@demo.edu` / `prof12345`
-- Students: `student1..5@demo.edu` / `student123` (all enrolled in CS-101)
+- Emails: professor `prof@demo.edu`, students `student1..5@demo.edu` (all
+  enrolled in CS-101).
+- Passwords are printed by `seed.py` — they are generated randomly per run
+  unless `PANORAMA_SEED_PROF_PASSWORD` / `PANORAMA_SEED_STUDENT_PASSWORD` are
+  set in the environment.
 
 `seed_faces/` holds synthetic generated portraits used only for demo seeds and
 tests. `professor_alt.png` shows the same professor in a different photo for

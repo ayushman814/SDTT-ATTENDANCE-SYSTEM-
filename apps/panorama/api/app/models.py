@@ -111,6 +111,7 @@ class Submission(Base):
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     image_url: Mapped[str] = mapped_column(String(500), nullable=False)
     image_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    selfie_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     status: Mapped[SubmissionStatus] = mapped_column(Enum(SubmissionStatus), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(200), nullable=True)

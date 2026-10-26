@@ -42,3 +42,16 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register models)
 
     Base.metadata.create_all(engine)
+    _apply_additive_migrations()
+
+
+def _apply_additive_migrations() -> None:
+    """Idempotent column additions for databases created by older revisions."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "submissions" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("submissions")}
+        if "selfie_url" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE submissions ADD COLUMN selfie_url VARCHAR(500)"))

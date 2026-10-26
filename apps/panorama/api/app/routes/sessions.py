@@ -20,7 +20,7 @@ from ..models import (
     SubmissionStatus,
     User,
 )
-from ..schemas import SessionOut, SessionCreateIn, SessionSummaryOut
+from ..schemas import EnrollIn, SessionOut, SessionCreateIn, SessionSummaryOut
 from ..security import require_professor
 from ..services import (
     audit,
@@ -33,6 +33,15 @@ from ..services import (
     submission_out,
     utcnow,
 )
+from ..models import Role
+
+
+def _csv_cell(value: str | None) -> str:
+    """Neutralize spreadsheet formula injection (=, +, -, @, tab, CR)."""
+    s = value or ""
+    if s and s[0] in "=+-@\t\r":
+        return "'" + s
+    return s
 
 router = APIRouter(tags=["sessions"])
 
@@ -48,6 +57,13 @@ def create_session(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"window_minutes must be one of {allowed}",
+        )
+    # Geofencing is all-or-nothing: half a coordinate pair must not silently
+    # create an unguarded session.
+    if (body.geo_lat is None) != (body.geo_lng is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="geo_lat and geo_lng must be provided together",
         )
     if body.course_id is not None:
         course = db.get(Course, body.course_id)
@@ -111,6 +127,92 @@ def professor_sessions(prof: User = Depends(require_professor), db: Session = De
 def professor_courses(prof: User = Depends(require_professor), db: Session = Depends(get_db)):
     courses = db.scalars(select(Course).where(Course.professor_id == prof.id)).all()
     return {"courses": [{"id": c.id, "code": c.code, "name": c.name} for c in courses]}
+
+
+# ── Enrollment management ────────────────────────────────────────────────────
+
+
+def _owned_course(db: Session, course_id: int, prof: User) -> Course:
+    course = db.get(Course, course_id)
+    if course is None or course.professor_id != prof.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Course not found")
+    return course
+
+
+@router.get("/professor/students")
+def list_students(prof: User = Depends(require_professor), db: Session = Depends(get_db)):
+    """Every registered student, so a professor can build a course roster."""
+    students = db.scalars(select(User).where(User.role == Role.student).order_by(User.name)).all()
+    return {
+        "students": [
+            {"id": s.id, "name": s.name, "email": s.email, "roll_no": s.roll_no}
+            for s in students
+        ]
+    }
+
+
+@router.get("/courses/{course_id}/students")
+def course_students(course_id: int, prof: User = Depends(require_professor), db: Session = Depends(get_db)):
+    course = _owned_course(db, course_id, prof)
+    return {
+        "students": [
+            {"id": s.id, "name": s.name, "email": s.email, "roll_no": s.roll_no}
+            for s in enrolled_students(db, course.id)
+        ]
+    }
+
+
+@router.post("/courses/{course_id}/students", status_code=201)
+def enroll_student(
+    course_id: int,
+    body: EnrollIn,
+    prof: User = Depends(require_professor),
+    db: Session = Depends(get_db),
+):
+    course = _owned_course(db, course_id, prof)
+    student = db.scalar(
+        select(User).where(User.email == body.email.strip().lower(), User.role == Role.student)
+    )
+    if student is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No student with that email")
+    exists = db.scalar(
+        select(Enrollment).where(
+            Enrollment.student_id == student.id, Enrollment.course_id == course.id
+        )
+    )
+    if exists is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Student already enrolled")
+    db.add(Enrollment(student_id=student.id, course_id=course.id))
+    audit(
+        db, "course.enrolled", "course", course.id, actor_id=prof.id,
+        detail={"student_id": student.id, "email": student.email},
+    )
+    db.commit()
+    return {"id": student.id, "name": student.name, "email": student.email, "roll_no": student.roll_no}
+
+
+@router.delete("/courses/{course_id}/students/{student_id}", status_code=204)
+def unenroll_student(
+    course_id: int,
+    student_id: int,
+    prof: User = Depends(require_professor),
+    db: Session = Depends(get_db),
+):
+    course = _owned_course(db, course_id, prof)
+    row = db.scalar(
+        select(Enrollment).where(
+            Enrollment.student_id == student_id, Enrollment.course_id == course.id
+        )
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Student not enrolled")
+    db.delete(row)
+    audit(
+        db, "course.unenrolled", "course", course.id, actor_id=prof.id,
+        detail={"student_id": student_id},
+    )
+    db.commit()
+    return None
 
 
 def _get_owned_session(db: Session, public_id: str, prof: User) -> ClassSession:
@@ -183,14 +285,14 @@ def export_csv(public_id: str, prof: User = Depends(require_professor), db: Sess
     for uid, student in sorted(roster.items(), key=lambda kv: (kv[1].roll_no or "")):
         sub = latest.get(uid)
         if sub is None:
-            w.writerow([student.name, student.roll_no or "", "absent", "", ""])
+            w.writerow([_csv_cell(student.name), _csv_cell(student.roll_no), "absent", "", ""])
         else:
             w.writerow([
-                student.name,
-                student.roll_no or "",
+                _csv_cell(student.name),
+                _csv_cell(student.roll_no),
                 sub.status.value,
                 sub.submitted_at.isoformat(),
-                reason_text(sub.reason) or "",
+                _csv_cell(reason_text(sub.reason)),
             ])
     audit(db, "session.exported", "session", s.public_id, actor_id=prof.id)
     db.commit()

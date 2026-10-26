@@ -2,15 +2,33 @@
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
 from PIL import Image
 
 
-def decode_image(data: bytes) -> np.ndarray:
-    """Decode uploaded bytes to a BGR array; raise ValueError when invalid."""
+def decoded_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) read from the image header without decoding pixels."""
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def decode_image(data: bytes, max_pixels: int | None = None) -> np.ndarray:
+    """Decode uploaded bytes to a BGR array; raise ValueError when invalid.
+
+    Checks the declared dimensions first: a small compressed file can decode
+    to a huge bitmap (decompression bomb), so oversized uploads are rejected
+    before cv2 allocates them.
+    """
+    if max_pixels is not None:
+        size = decoded_size(data)
+        if size is not None and size[0] * size[1] > max_pixels:
+            raise ValueError("image_too_large")
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None or img.size == 0:
@@ -58,21 +76,26 @@ def moire_score(img_bgr: np.ndarray) -> float:
 
 
 def exif_capture_time(data: bytes) -> datetime | None:
-    """Best-effort capture timestamp from EXIF (DateTimeOriginal)."""
+    """Best-effort capture timestamp from EXIF (DateTimeOriginal + offset).
+
+    DateTimeOriginal alone is timezone-naive — assuming UTC would misclassify
+    fresh photos from cameras in other zones — so an offset tag is required
+    to produce a comparable instant; without one we return None (no check).
+    """
     try:
-        img = Image.open(io.BytesIO(data))
-        exif = img.getexif()
-        if not exif:
-            return None
-        dt_str = exif.get(36867)  # ExifIFD DateTimeOriginal
-        if not dt_str:
+        with Image.open(io.BytesIO(data)) as img:
+            exif = img.getexif()
+            if not exif:
+                return None
             ifd = exif.get_ifd(0x8769)
-            dt_str = ifd.get(36867) if ifd else None
-        if not dt_str:
+            dt_str = exif.get(36867) or (ifd.get(36867) if ifd else None)
+            offset_str = exif.get(36881) or (ifd.get(36881) if ifd else None)
+        if not dt_str or not offset_str:
             return None
-        return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
+        sign = 1 if offset_str.startswith("+") else -1
+        oh, om = int(offset_str[1:3]), int(offset_str[4:6])
+        tz = timezone(sign * timedelta(hours=oh, minutes=om))
+        return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S").replace(tzinfo=tz)
     except Exception:
         return None
 

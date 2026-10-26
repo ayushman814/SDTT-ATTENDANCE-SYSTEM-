@@ -6,6 +6,8 @@ Synthetic demo faces live in `seed_faces/` (generated portraits). Run:
 """
 from __future__ import annotations
 
+import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -22,13 +24,19 @@ from sqlalchemy import select  # noqa: E402
 
 FACES = ROOT / "seed_faces"
 
-PROFESSOR = dict(name="Prof. A. Verma", email="prof@demo.edu", password="prof12345", face="professor.png")
+# Demo passwords come from the environment or are generated per run — they are
+# never published in the repo. Set PANORAMA_SEED_PROF_PASSWORD /
+# PANORAMA_SEED_STUDENT_PASSWORD for deterministic credentials.
+_prof_pw = os.getenv("PANORAMA_SEED_PROF_PASSWORD") or secrets.token_urlsafe(12)
+_student_pw = os.getenv("PANORAMA_SEED_STUDENT_PASSWORD") or secrets.token_urlsafe(12)
+
+PROFESSOR = dict(name="Prof. A. Verma", email="prof@demo.edu", password=_prof_pw, face="professor.png")
 STUDENTS = [
-    dict(name="Ananya Rao", email="student1@demo.edu", roll_no="CS101-01", password="student123", face="student1.png"),
-    dict(name="Rohan Iyer", email="student2@demo.edu", roll_no="CS101-02", password="student123", face="student2.png"),
-    dict(name="Mei Chen", email="student3@demo.edu", roll_no="CS101-03", password="student123", face="student3.png"),
-    dict(name="Kofi Mensah", email="student4@demo.edu", roll_no="CS101-04", password="student123", face="student4.png"),
-    dict(name="Lucia Torres", email="student5@demo.edu", roll_no="CS101-05", password="student123", face="student5.png"),
+    dict(name="Ananya Rao", email="student1@demo.edu", roll_no="CS101-01", password=_student_pw, face="student1.png"),
+    dict(name="Rohan Iyer", email="student2@demo.edu", roll_no="CS101-02", password=_student_pw, face="student2.png"),
+    dict(name="Mei Chen", email="student3@demo.edu", roll_no="CS101-03", password=_student_pw, face="student3.png"),
+    dict(name="Kofi Mensah", email="student4@demo.edu", roll_no="CS101-04", password=_student_pw, face="student4.png"),
+    dict(name="Lucia Torres", email="student5@demo.edu", roll_no="CS101-05", password=_student_pw, face="student5.png"),
 ]
 
 

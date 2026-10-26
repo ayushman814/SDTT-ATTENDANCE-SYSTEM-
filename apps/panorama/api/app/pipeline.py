@@ -84,6 +84,7 @@ def verify_submission(
     geo: tuple[float, float] | None = None,
     now: datetime | None = None,
     selfie_bgr: np.ndarray | None = None,
+    extra_raw_bytes: Iterable[bytes] | None = None,
 ) -> Verdict:
     now = now or datetime.now(timezone.utc)
     vcfg = cfg["verification"]
@@ -126,10 +127,20 @@ def verify_submission(
     if blur < spoof["blur_min_variance"]:
         return _fail("image_too_blurry", scores)
 
-    # 5 — EXIF freshness (missing EXIF is tolerated: many cameras strip it)
-    capture_time = imaging.exif_capture_time(raw_bytes)
-    if capture_time is not None:
-        age_min = (now - capture_time).total_seconds() / 60.0
+    # 5 — EXIF freshness on every source image (the panorama is re-encoded
+    # before this point, so for live captures the original frame bytes are
+    # passed via extra_raw_bytes). Missing/naive EXIF is tolerated.
+    capture_times = [
+        t
+        for t in (
+            imaging.exif_capture_time(b)
+            for b in [raw_bytes, *(extra_raw_bytes or [])]
+        )
+        if t is not None
+    ]
+    if capture_times:
+        # the oldest capture governs: one stale frame means a replayed photo
+        age_min = (now - min(capture_times)).total_seconds() / 60.0
         scores["exif_age_minutes"] = round(age_min, 2)
         if age_min > spoof["exif_max_age_minutes"] or age_min < -5:
             return _fail("stale_capture", scores)

@@ -51,6 +51,7 @@ export const api = {
     email: string;
     password: string;
     roll_no?: string;
+    invite_code?: string;
     consent: boolean;
   }) => json<{ access_token: string; user: import("./types").User }>("/api/auth/register", "POST", payload),
 
@@ -91,6 +92,15 @@ export const api = {
 
   professorCourses: (token: string) =>
     request<{ courses: { id: number; code: string; name: string }[] }>("/api/professor/courses", {}, token),
+
+  courseStudents: (token: string, courseId: number) =>
+    request<{ students: import("./types").RosterStudent[] }>(`/api/courses/${courseId}/students`, {}, token),
+
+  enrollStudent: (token: string, courseId: number, email: string) =>
+    json<import("./types").RosterStudent>(`/api/courses/${courseId}/students`, "POST", { email }, token),
+
+  unenrollStudent: (token: string, courseId: number, studentId: number) =>
+    request<void>(`/api/courses/${courseId}/students/${studentId}`, { method: "DELETE" }, token),
 
   sessionSummary: (token: string, publicId: string) =>
     request<import("./types").SessionSummary>(`/api/sessions/${publicId}/summary`, {}, token),

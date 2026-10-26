@@ -42,12 +42,13 @@ export default function LiveCapture({
     return new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.9));
   }
 
+  /** Acquire `facing`, then swap — on failure the current stream stays live. */
   async function startCamera(facing: "user" | "environment") {
-    stopStream();
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     });
+    stopStream();
     streamRef.current = stream;
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
@@ -75,7 +76,8 @@ export default function LiveCapture({
             try {
               await startCamera("environment");
             } catch {
-              // Some devices (desktops) have a single camera — keep the same stream.
+              // Single-camera devices (desktops) reject the environment request —
+              // the front stream is still live, so sweep with it.
             }
             if (cancelled) return;
             setPhase("sweep");

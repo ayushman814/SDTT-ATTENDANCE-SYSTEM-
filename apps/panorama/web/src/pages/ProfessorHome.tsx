@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api, ApiError } from "../api";
-import type { SessionListItem } from "../types";
+import type { RosterStudent, SessionListItem } from "../types";
 import Header from "../components/Header";
 import Countdown from "../components/Countdown";
 import StatusBadge from "../components/StatusBadge";
@@ -17,6 +17,11 @@ export default function ProfessorHome() {
   const [geo, setGeo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [rosterCourseId, setRosterCourseId] = useState<number | null>(null);
+  const [roster, setRoster] = useState<RosterStudent[]>([]);
+  const [enrollEmail, setEnrollEmail] = useState("");
+  const [enrollMsg, setEnrollMsg] = useState<string | null>(null);
 
   const refresh = () => {
     if (!token) return;
@@ -42,10 +47,14 @@ export default function ProfessorHome() {
         const pos = await new Promise<GeolocationPosition>((res, rej) =>
           navigator.geolocation.getCurrentPosition(res, rej, { timeout: 8000 }),
         ).catch(() => null);
-        if (pos) {
-          geoLat = pos.coords.latitude;
-          geoLng = pos.coords.longitude;
+        // Geofencing must never silently degrade: no fix, no session.
+        if (!pos) {
+          setError("Location unavailable — allow location access or uncheck the geofence option.");
+          setBusy(false);
+          return;
         }
+        geoLat = pos.coords.latitude;
+        geoLng = pos.coords.longitude;
       }
       const payload =
         courseId === "new"
@@ -136,6 +145,94 @@ export default function ProfessorHome() {
               {busy ? "Starting…" : "Start attendance"}
             </button>
           </form>
+        </section>
+
+        <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-lg font-semibold text-slate-900">Course enrollment</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Students must be enrolled before they can see or submit to a course's sessions.
+          </p>
+          <select
+            className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2.5"
+            value={rosterCourseId ?? ""}
+            onChange={(e) => {
+              const id = e.target.value ? Number(e.target.value) : null;
+              setRosterCourseId(id);
+              setEnrollMsg(null);
+              if (id && token)
+                api.courseStudents(token, id).then((r) => setRoster(r.students)).catch(() => {});
+            }}
+          >
+            <option value="">Select a course…</option>
+            {courses.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.code} — {c.name}
+              </option>
+            ))}
+          </select>
+          {rosterCourseId !== null && (
+            <div className="mt-4 space-y-3">
+              {roster.length === 0 ? (
+                <p className="text-sm text-slate-500">No students enrolled yet.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {roster.map((s) => (
+                    <li key={s.id} className="flex items-center justify-between py-2 text-sm">
+                      <span className="text-slate-800">
+                        {s.name}
+                        <span className="ml-2 text-slate-400">{s.roll_no || s.email}</span>
+                      </span>
+                      <button
+                        onClick={() => {
+                          if (!token || !rosterCourseId) return;
+                          api
+                            .unenrollStudent(token, rosterCourseId, s.id)
+                            .then(() => setRoster((r) => r.filter((x) => x.id !== s.id)))
+                            .catch(() => {});
+                        }}
+                        className="text-red-600 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!token || !rosterCourseId || !enrollEmail.trim()) return;
+                  api
+                    .enrollStudent(token, rosterCourseId, enrollEmail.trim())
+                    .then((s) => {
+                      setRoster((r) => [...r, s]);
+                      setEnrollEmail("");
+                      setEnrollMsg(`Enrolled ${s.name}`);
+                    })
+                    .catch((e2) =>
+                      setEnrollMsg(e2 instanceof ApiError ? e2.message : "Enrollment failed"),
+                    );
+                }}
+              >
+                <input
+                  type="email"
+                  required
+                  placeholder="student@university.edu"
+                  value={enrollEmail}
+                  onChange={(e) => setEnrollEmail(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800"
+                >
+                  Enroll
+                </button>
+              </form>
+              {enrollMsg && <p className="text-sm text-slate-600">{enrollMsg}</p>}
+            </div>
+          )}
         </section>
 
         <section>

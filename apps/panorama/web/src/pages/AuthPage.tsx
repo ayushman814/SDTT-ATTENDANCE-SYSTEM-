@@ -13,6 +13,7 @@ export default function AuthPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [rollNo, setRollNo] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [password, setPassword] = useState("");
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +33,7 @@ export default function AuthPage() {
               email,
               password,
               roll_no: isStudent ? rollNo : undefined,
+              invite_code: isStudent ? undefined : inviteCode,
               consent,
             });
       navigate(user.face_enrolled ? `/${role}` : "/enroll");
@@ -86,6 +88,17 @@ export default function AuthPage() {
             {mode === "register" && isStudent && (
               <Field label="Roll number">
                 <input required value={rollNo} onChange={(e) => setRollNo(e.target.value)} className={inputCls} />
+              </Field>
+            )}
+            {mode === "register" && !isStudent && (
+              <Field label="Professor invite code">
+                <input
+                  required
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  placeholder="Provided by your institution"
+                  className={inputCls}
+                />
               </Field>
             )}
             <Field label="Password">

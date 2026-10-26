@@ -1,1 +1,1 @@
-from . import auth, sessions, submissions, users  # noqa: F401
+from . import auth, sessions, submissions, uploads, users  # noqa: F401

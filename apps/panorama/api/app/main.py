@@ -10,11 +10,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, UPLOAD_DIR
 from .db import init_db
-from .routes import auth, sessions, submissions, users
+from .routes import auth, sessions, submissions, uploads, users
 
 
 @asynccontextmanager
@@ -38,8 +37,11 @@ app.include_router(users.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(submissions.router, prefix="/api")
 
+app.include_router(uploads.router, prefix="/api")
+
+# Uploads are served through the authenticated /api/uploads/... route only —
+# face photos and panoramas are biometric data, never publicly reachable.
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/api/health")

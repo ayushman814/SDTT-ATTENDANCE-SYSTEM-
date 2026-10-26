@@ -73,15 +73,23 @@ def submit(
     if enrolled is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Not enrolled in this course")
 
-    already = db.scalars(
-        select(Submission).where(
+    # A retake is only blocked when the student's standing (latest) submission
+    # is already present — approving an older row must not strand a newer
+    # rejection with no way to resubmit.
+    latest = db.scalars(
+        select(Submission)
+        .where(
             Submission.session_id == session.id,
             Submission.student_id == student.id,
-            Submission.status == SubmissionStatus.present,
         )
+        .order_by(Submission.id.desc())
     ).first()
-    if already is not None:
+    if latest is not None and latest.status == SubmissionStatus.present:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Attendance already marked present")
+
+    # Authoritative receipt time: used for both window checks so a submission
+    # that arrives inside the window can't expire mid-processing.
+    received_at = datetime.now(timezone.utc)
 
     def _read_image(up: UploadFile, what: str) -> bytes:
         ctype = (up.content_type or "").lower()
@@ -99,24 +107,30 @@ def submit(
     if len(frames) > cfg()["upload"]["max_frames"]:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Too many frames")
     selfie_data = _read_image(selfie, "selfie")
+    max_pixels = cfg()["upload"]["max_pixels"]
     try:
-        selfie_img = imaging.decode_image(selfie_data)
-    except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Selfie is not a readable image")
-    frame_imgs = []
+        selfie_img = imaging.decode_image(selfie_data, max_pixels=max_pixels)
+    except ValueError as exc:
+        detail = "Selfie is too large" if str(exc) == "image_too_large" else "Selfie is not a readable image"
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=detail)
+    frame_datas, frame_imgs = [], []
     for i, f in enumerate(frames):
         try:
-            frame_imgs.append(imaging.decode_image(_read_image(f, f"frame {i+1}")))
+            fdata = _read_image(f, f"frame {i+1}")
+            frame_imgs.append(imaging.decode_image(fdata, max_pixels=max_pixels))
+            frame_datas.append(fdata)
         except HTTPException:
             raise
-        except ValueError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Sweep frame {i+1} is not a readable image")
+        except ValueError as exc:
+            detail = (
+                f"Sweep frame {i+1} is too large"
+                if str(exc) == "image_too_large"
+                else f"Sweep frame {i+1} is not a readable image"
+            )
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=detail)
     pano = imaging.stitch_frames(frame_imgs)
     data = imaging.encode_jpeg(pano)
     img = pano
-    # Store the captured selfie alongside the panorama for audit.
-    SELFIES_DIR.mkdir(parents=True, exist_ok=True)
-    (SELFIES_DIR / f"{uuid.uuid4().hex}.jpg").write_bytes(imaging.encode_jpeg(selfie_img))
 
     # Save the panorama (metadata stripped); verification runs on the bytes.
     SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,15 +160,24 @@ def submit(
             engine=get_engine(),
             cfg=cfg(),
             geo=geo,
+            now=received_at,
             selfie_bgr=selfie_img,
+            extra_raw_bytes=[selfie_data, *frame_datas],
         )
         status_v, reason, scores = verdict.status, verdict.reason, verdict.scores
         phash = scores.get("phash", "")
 
+        # The session may have been closed (by the professor or the clock)
+        # while we were processing — re-check before persisting a verdict.
+        db.expire(session)
+        session = maybe_close(db, session)
+        if session.status != SessionStatus.active:
+            status_v, reason = SubmissionStatus.rejected, "window_closed"
+
     sub = Submission(
         session_id=session.id,
         student_id=student.id,
-        image_url=f"/uploads/submissions/{fname}",
+        image_url=f"/api/uploads/submissions/{fname}",
         image_hash=phash,
         status=status_v,
         reason=reason,
@@ -162,6 +185,13 @@ def submit(
     )
     db.add(sub)
     db.flush()
+
+    # Store the captured selfie keyed by the submission for audit + privacy
+    # (delete_face_data removes it together with the reference photo).
+    SELFIES_DIR.mkdir(parents=True, exist_ok=True)
+    selfie_name = f"selfie_{sub.id}.jpg"
+    (SELFIES_DIR / selfie_name).write_bytes(imaging.encode_jpeg(selfie_img))
+    sub.selfie_url = f"/api/uploads/selfies/{selfie_name}"
     audit(
         db, "submission.created", "submission", sub.id, actor_id=student.id,
         detail={"session": public_id, "status": status_v.value, "reason": reason},

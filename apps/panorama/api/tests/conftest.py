@@ -18,6 +18,7 @@ _tmp = tempfile.mkdtemp(prefix="pano-test-")
 os.environ.setdefault("PANORAMA_DATABASE_URL", f"sqlite:///{_tmp}/test.db")
 os.environ.setdefault("PANORAMA_UPLOAD_DIR", f"{_tmp}/uploads")
 os.environ.setdefault("PANORAMA_JWT_SECRET", "test-secret")
+os.environ.setdefault("PANORAMA_PROFESSOR_INVITE_CODE", "test-invite")
 
 from app.config import cfg  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
