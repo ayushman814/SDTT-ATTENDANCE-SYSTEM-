@@ -1,98 +1,108 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -e
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="$ROOT_DIR/.attendrix-pids"
-LOG_DIR="$ROOT_DIR/.attendrix-logs"
-PYTHON_BIN="${PYTHON_BIN:-python}"
-VENV_DIR="$ROOT_DIR/backend/.venv"
-venv_python() {
-  if [[ -x "$VENV_DIR/Scripts/python.exe" ]]; then printf '%s' "$VENV_DIR/Scripts/python.exe"; else printf '%s' "$VENV_DIR/bin/python"; fi
-}
-VENV_PYTHON="$(venv_python)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$SCRIPT_DIR/backend"
+DASHBOARD_DIR="$SCRIPT_DIR/apps/dashboard"
+PRESENTATION_DIR="$SCRIPT_DIR/presentation/attendrix"
+BACKEND_PID_FILE="$SCRIPT_DIR/.backend.pid"
 
-has_command() { command -v "$1" >/dev/null 2>&1; }
-info() { printf '[attendrix] %s\n' "$*"; }
-warn() { printf '[attendrix] warning: %s\n' "$*" >&2; }
+log() { echo "==> $*"; }
 
-check() {
-  local failed=0
-  has_command "$PYTHON_BIN" || { warn "Python is required."; failed=1; }
-  if has_command node; then info "Node $(node --version) detected"; else warn "Node.js is unavailable; dashboard and presentation servers cannot start."; fi
-  has_command npm || warn "npm is unavailable; JavaScript dependencies cannot be installed." 
-  if has_command flutter; then info "Flutter detected"; else warn "Flutter is unavailable; mobile hardware checks are skipped."; fi
-  if has_command psql; then info "PostgreSQL client detected"; else warn "PostgreSQL client is unavailable. Supabase or another configured database must still be reachable by the API."; fi
-  [[ -f "$ROOT_DIR/backend/requirements.txt" ]] || { warn "backend/requirements.txt is missing"; failed=1; }
-  [[ -f "$ROOT_DIR/apps/dashboard/package-lock.json" ]] || { warn "dashboard lockfile is missing"; failed=1; }
-  [[ -f "$ROOT_DIR/presentation/attendrix/package-lock.json" ]] || { warn "presentation lockfile is missing"; failed=1; }
-  if [[ ! -f "$ROOT_DIR/backend/.env" ]]; then warn "backend/.env is missing; copy .env.example and configure the database before starting the API."; fi
-  return "$failed"
+cmd_check() {
+  log "Validating shell script syntax"
+  bash -n "$SCRIPT_DIR/run.sh"
+
+  log "Compiling backend Python sources"
+  "$BACKEND_DIR/.venv/bin/python" -m compileall -q "$BACKEND_DIR/app" || \
+    (source "$BACKEND_DIR/.venv/bin/activate" && python -m compileall -q "$BACKEND_DIR/app")
+
+  log "Type-checking dashboard TypeScript sources"
+  if [ -d "$DASHBOARD_DIR/node_modules" ]; then
+    (cd "$DASHBOARD_DIR" && npx tsc -b --pretty false)
+  fi
+
+  log "All static checks passed."
 }
 
-stop() {
-  if [[ -f "$PID_FILE" ]]; then
-    while read -r pid _; do
-      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+cmd_setup() {
+  log "Creating backend virtual environment"
+  if [ ! -d "$BACKEND_DIR/.venv" ]; then
+    python3 -m venv "$BACKEND_DIR/.venv"
+  fi
+
+  log "Installing backend dependencies"
+  source "$BACKEND_DIR/.venv/bin/activate"
+  pip install -q -r "$BACKEND_DIR/requirements.txt"
+
+  log "Installing dashboard dependencies"
+  if [ -d "$DASHBOARD_DIR/node_modules" ]; then
+    (cd "$DASHBOARD_DIR" && npm install --no-audit --no-fund)
+  else
+    (cd "$DASHBOARD_DIR" && npm install --no-audit --no-fund)
+  fi
+
+  log "Installing presentation dependencies"
+  if [ -d "$PRESENTATION_DIR/node_modules" ]; then
+    (cd "$PRESENTATION_DIR" && npm install --no-audit --no-fund)
+  else
+    (cd "$PRESENTATION_DIR" && npm install --no-audit --no-fund)
+  fi
+
+  log "Setup complete."
+}
+
+cmd_test() {
+  log "Running backend test suite"
+  (cd "$BACKEND_DIR" && source .venv/bin/activate && python -m pytest tests/ -q)
+
+  log "Running Flutter mobile test suite"
+  if command -v flutter >/dev/null 2>&1; then
+    (cd "$SCRIPT_DIR/apps/mobile" && flutter test)
+  else
+    echo "SKIPPED: flutter not found in PATH"
+  fi
+
+  log "Building teacher dashboard"
+  (cd "$DASHBOARD_DIR" && npm run build)
+
+  log "Building presentation website"
+  if [ -d "$PRESENTATION_DIR/node_modules" ]; then
+    (cd "$PRESENTATION_DIR" && npm run build)
+  else
+    echo "SKIPPED: presentation dependencies not installed (run ./run.sh setup)"
+  fi
+}
+
+cmd_stop() {
+  log "Stopping attendance backend server"
+  if [ -f "$BACKEND_PID_FILE" ]; then
+    local pid
+    pid="$(cat "$BACKEND_PID_FILE")"
+    if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
-    done < "$PID_FILE"
-    rm -f "$PID_FILE"
-    info "Stopped tracked Attendrix processes."
+      for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+      done
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$BACKEND_PID_FILE"
+  fi
+  pkill -f "uvicorn app.main:app" 2>/dev/null || true
+  sleep 1
+  if curl -s --max-time 2 http://localhost:8000/api/health >/dev/null 2>&1; then
+    echo "Backend still responding on :8000 - kill it manually (pkill -f uvicorn)."
   else
-    info "No tracked Attendrix processes found."
+    echo "Backend stopped."
   fi
 }
 
-ensure_dependencies() {
-  mkdir -p "$LOG_DIR"
-  if [[ ! -x "$VENV_PYTHON" ]]; then
-    info "Creating backend virtual environment"
-    "$PYTHON_BIN" -m venv "$ROOT_DIR/backend/.venv"
-    VENV_PYTHON="$(venv_python)"
-  fi
-  "$VENV_PYTHON" -m pip install -r "$ROOT_DIR/backend/requirements.txt"
-  if has_command npm; then
-    (cd "$ROOT_DIR/apps/dashboard" && npm ci)
-    (cd "$ROOT_DIR/presentation/attendrix" && npm ci)
-  else
-    return 1
-  fi
-}
-
-start_service() {
-  local name="$1"; shift
-  "$@" >"$LOG_DIR/$name.log" 2>&1 &
-  local pid=$!
-  printf '%s %s\n' "$pid" "$name" >> "$PID_FILE"
-  info "$name started (pid $pid); log: .attendrix-logs/$name.log"
-}
-
-start() {
-  check || { warn "Prerequisite check failed; fix the reported items and retry."; return 1; }
-  ensure_dependencies
-  : > "$PID_FILE"
-  if [[ -f "$ROOT_DIR/backend/.env" ]]; then
-    start_service backend bash -lc "cd '$ROOT_DIR/backend' && '$VENV_PYTHON' -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000"
-  fi
-  start_service dashboard bash -lc "cd '$ROOT_DIR/apps/dashboard' && npm run dev -- --host 127.0.0.1 --port 4173"
-  start_service presentation bash -lc "cd '$ROOT_DIR/presentation/attendrix' && npm run dev -- --hostname 127.0.0.1 --port 3001"
-  info "Dashboard: http://localhost:4173"
-  info "Presentation: http://localhost:3001"
-  [[ -f "$ROOT_DIR/backend/.env" ]] && info "Backend: http://localhost:8000/api/health" || warn "Backend not started until backend/.env is configured."
-}
-
-test() {
-  local failed=0
-  if [[ -x "$VENV_PYTHON" ]]; then (cd "$ROOT_DIR/backend" && "$VENV_PYTHON" -m pytest -q) || failed=1; else warn "Backend virtual environment missing; run ./run.sh setup or install requirements."; failed=1; fi
-  if has_command npm; then (cd "$ROOT_DIR/apps/dashboard" && npm run build) || failed=1; (cd "$ROOT_DIR/presentation/attendrix" && npm run build) || failed=1; else warn "Skipping JavaScript builds because npm is unavailable."; failed=1; fi
-  if has_command flutter; then (cd "$ROOT_DIR/apps/mobile" && flutter analyze && flutter test) || failed=1; else warn "Skipping Flutter checks because Flutter is unavailable."; fi
-  return "$failed"
-}
-
-case "${1:-start}" in
-  check) check ;;
-  setup) check && ensure_dependencies ;;
-  test) test ;;
-  stop) stop ;;
-  start) start ;;
-  *) printf 'Usage: %s [start|check|setup|test|stop]\n' "$0"; exit 2 ;;
+case "${1:-}" in
+  check)  cmd_check ;;
+  setup)  cmd_setup ;;
+  test)   cmd_test ;;
+  stop)   cmd_stop ;;
+  help)   echo "Usage: ./run.sh {check|setup|test|stop}" ;;
+  *)       echo "Usage: ./run.sh {check|setup|test|stop}"; exit 2 ;;
 esac

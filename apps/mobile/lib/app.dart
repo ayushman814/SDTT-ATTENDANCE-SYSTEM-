@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'screens/controller_screen.dart';
+import 'screens/enrollment_screen.dart';
 import 'screens/home_screen.dart';
-import 'screens/login_screen.dart';
+import 'screens/role_selection_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/app_widgets.dart';
 
@@ -46,7 +48,24 @@ class _AttendanceAppState extends State<AttendanceApp> {
           },
         ),
       ),
-       home: state.user == null ? LoginScreen(state: state) : HomeScreen(state: state),
+      home: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 350),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) {
+          return FadeTransition(
+            opacity: animation,
+            child: child,
+          );
+        },
+        child: state.user == null
+            ? RoleSelectionScreen(key: const ValueKey('role_select'), state: state)
+            : (state.isController
+                ? ControllerScreen(key: const ValueKey('controller'), state: state)
+                : (state.isStudent && state.enrollmentStatus?.enrolled == false
+                    ? EnrollmentScreen(key: const ValueKey('enrollment'), state: state)
+                    : HomeScreen(key: const ValueKey('home'), state: state))),
+      ),
     );
   }
 }

@@ -1,55 +1,156 @@
-# Shared API contract
+# Shared API Contract — Attendrix Attendance Verification
 
-Base path: `/api`. JSON is UTF-8. Authenticated HTTP routes use `Authorization: Bearer <Supabase access token>`. IDs are UUID strings. The backend verifies Supabase Auth tokens and resolves the caller's role from the administrator-provisioned `profiles` row; client-supplied user metadata cannot grant a professor role.
+Base path: `/api`. All JSON payloads are UTF-8. Authenticated routes require `Authorization: Bearer <access_token>`.
 
-## Authentication and identity
+---
 
-- `POST /auth/login` accepts `{ "identifier": "registration-id-or-email", "password": "..." }`; legacy `email` input is accepted. It returns `{access_token, token_type, user:{id,name,email,role,registration_id}}`.
-- `GET /me` returns the authenticated provisioned profile.
-- `POST /auth/ws-ticket` returns a short-lived, single-use `{ticket}`. The ticket—not the bearer token—is used for WebSocket connection.
-- Roles are `controller`, `teacher`, and `student`. Student routes are scoped to the authenticated student's own profile and class enrollments.
+## 1. Authentication, Roles & Biometric Enrollment
 
-## Classes and timed sessions
+- `POST /api/auth/login`
+  - Request: `{ "email": string, "password": string, "selected_role"?: "student" | "lecturer" }`
+  - Behavior: Verifies account credentials. If `selected_role` is supplied, rejects mismatch (`403 Forbidden`).
+  - Response: `{ "access_token": string, "token_type": "bearer", "user": { "id": string, "name": string, "email": string, "role": "teacher" | "student" } }`
+  - Note: In database and token payload, lecturer role is stored as `"teacher"`. The UI displays "Lecturer".
 
-- `GET /classes` returns a professor's classes or the student's enrolled classes.
-- `GET /classes/{class_id}/students` returns an enrolled roster; professor only.
-- `GET /sessions` returns relevant sessions ordered newest first. Server time synchronizes scheduled/open/closed state.
-- `POST /sessions` is professor-only and accepts `{class_id, title?, opens_at?, deadline_at?, stage_region?, minimum_people_visible?}`. Datetimes must include timezone offsets. `stage_region` uses normalized coordinates `{x,y,width,height}` in the 0–1 range. Defaults are now and a ten-minute window. A pending attendance row is created for each enrolled student.
-- `GET /sessions/{session_id}` returns role-limited detail. Professor detail includes roster; student detail includes only their own attendance and submission state.
-- `POST /sessions/{session_id}/open` allows a professor to open a scheduled session early while preserving its deadline.
-- `POST /sessions/{session_id}/close` closes a scheduled/open window; repeated close is idempotent. Server-side state checks prevent submissions after the deadline.
-- `POST /sessions/{session_id}/capture` is retired and returns HTTP 410; no synthetic suggestions are generated.
+- `POST /api/auth/enroll`
+  - Headers: `Authorization: Bearer <token>`
+  - Body: Multipart Form (`photo`: binary image, `consent`: `"true"` | `"false"`)
+  - Validation: Requires front camera image with exactly one clear face (Laplacian blur variance $\ge 80$, luminance $40 \dots 220$). Rejects multi-face, no-face, or blurry images.
+  - Storage: Computes 512-d ArcFace embedding, encrypts using Fernet AES-128-CBC + SHA256 HMAC, and stores in `face_templates` table alongside model version (`arcface_r100_v1`) and consent timestamp.
+  - Security: Biometric embeddings are service-role readable only and are never exposed via any API endpoint.
+  - Response: `{ "status": "enrolled", "model_version": string, "enrolled_at": string }`
 
-## Enrollment and live verification
+- `GET /api/auth/enrollment-status`
+  - Headers: `Authorization: Bearer <token>`
+  - Response: `{ "enrolled": boolean, "enrolled_at": string | null, "model_version": string | null }`
 
-- `GET /registration` returns the controller-controlled registration window and the authenticated student's enrollment state.
-- `POST /registration/open` and `POST /registration/close` are controller-only and audited.
-- `POST /students/me/face-enrollment` accepts one front-camera image only while registration is open. The API detects a single face, derives an approved embedding, encrypts it with a server-only key, and does not store the source image. Duplicate enrollment is rejected.
-- `POST /sessions/{session_id}/verification` accepts repeated `face_frames` and one `classroom` image. It evaluates identity, liveness, and classroom context separately. Liveness requires observed movement and an eye-state transition; a heuristic result is not a guarantee of spoof prevention. The response uses `CONFIRMED`, `PENDING_REVIEW`, or `REJECTED` and includes reasons for every non-passing category.
+- `GET /api/me`
+  - Headers: `Authorization: Bearer <token>`
+  - Response: `{ "id": string, "name": string, "email": string, "role": string }`
 
-## Student scene-evidence submission
+- `POST /api/auth/ws-ticket`
+  - Headers: `Authorization: Bearer <token>`
+  - Response: `{ "ticket": string, "expires_in": 60 }` (single-use ticket for WebSocket connection)
 
-- `POST /sessions/{session_id}/submissions` is student-only, multipart field `photo`. The student must be enrolled and the server must consider the session open. Supported MIME types are JPEG, PNG, and WebP; size limit defaults to 10 MiB.
-- The image is quality-checked for format, minimum width/height, panoramic aspect ratio, blur, and brightness, then analyzed with a pretrained person detector. Optional stage-region and visible-person criteria classify scene evidence.
-- Result status is `VERIFIED`, `NEEDS_REVIEW`, or `REJECTED`. `VERIFIED` means only that the configured scene criteria passed for an authenticated submitter; it does not identify a student, lecturer, or any person in the image. Uncertain/rejected submissions remain pending until a professor decides or manually corrects attendance.
-- Each student may have one submission per session. An automatic `REJECTED` submission may be replaced before a professor decision, subject to the open window. The retry updates the existing submission row and increments `attempt_number`.
-- Upload images are stored only in the private `attendance-submissions` Supabase bucket. A background retention worker (default 30 days, configurable with `ATTENDANCE_IMAGE_RETENTION_DAYS`) deletes expired image objects and clears storage path/hash references. Attendance and review metadata remain.
+- `GET /api/time`
+  - Response: `{ "server_time": ISO8601, "timestamp": float }`
+  - Purpose: Provides server-authoritative clock for client countdown calculations.
 
-## Professor review, attendance, and reports
+---
 
-- `GET /sessions/{session_id}/submissions` is professor-only and returns submission metadata, scene evidence, review status, and a signed private `image_url` with short expiry. Student accounts cannot access classmates' images.
-- `POST /sessions/{session_id}/submissions/{submission_id}/review` accepts `{decision:"approve"|"reject", reason}`. Decisions and reason are audited. Approve sets present; reject returns the student's attendance to pending for later manual correction/finalization.
-- `PATCH /sessions/{session_id}/attendance/{student_id}` accepts `{status:"present"|"absent"|"pending",note?}`; professor-only and audited.
-- `POST /sessions/{session_id}/finalize` accepts `{mark_pending_absent:true}` and only succeeds after closing. Remaining pending students become absent; an audit record and private in-app notifications are written for enrolled students.
-- `GET /students/me/attendance` returns only the student's records and summary (`present`, `absent`, `pending`, `total_finalized`, nullable `percentage`).
-- `GET /reports/sessions/{session_id}` is professor-only and returns session metadata, rows, summary counts, CSV text, and print-friendly `pdf_html` (the API does not itself render a PDF).
-- `GET /reports/sessions/{session_id}/xlsx` is professor-only and returns a real workbook with Executive Summary, Session Attendance, Student-wise Attendance, Verification Review, and Corrections and Audit History worksheets.
-- `GET /audit?session_id=<uuid>` is professor-only. `GET /notifications` and `POST /notifications/{notification_id}/read` are scoped to the current user.
+## 2. Classes and Sessions
 
-## Realtime events
+- `GET /api/classes`
+  - Response: `[{ "id": string, "name": string, "code": string, "student_count": int }]`
 
-After `POST /auth/ws-ticket`, connect to `/ws?ticket=<ticket>` over WebSocket (`wss` in production). Tickets expire quickly and are consumed once. Events include `session.created`, `submission.created`, `attendance.changed`, `session.finalized`, and `notification.created`. Events are update signals; clients should re-fetch authoritative REST data after receipt or reconnect.
+- `GET /api/classes/{class_id}/students`
+  - Access: Lecturer only (`role == "teacher"`).
+  - Response: Roster of students enrolled in the class.
 
-## Privacy and limits
+- `GET /api/sessions`
+  - Access: Authenticated users.
+  - Response: For lecturers, all created sessions. For students, relevant sessions in enrolled classes.
 
-Face embeddings are encrypted at rest and never returned to clients. DeepFace/OpenCV/YOLO model availability is a deployment requirement. Identity thresholds and liveness heuristics require local validation and are not accuracy or anti-spoofing claims. Classroom similarity is contextual evidence and cannot prove a student's exact seat. Review notice/consent, retention, model licensing, access controls, security, fairness, and jurisdiction-specific requirements before handling real student records or photos.
+- `POST /api/sessions`
+  - Access: Lecturer only.
+  - Request: `{ "class_id": string, "duration_minutes"?: int }` (presets: 5, 10, 15, or custom; default 10, max 60).
+  - Behavior: Computes server-authoritative `starts_at` and `ends_at`. Populates class roster with status `"pending"`.
+  - Response: Session object (`status: "open"`).
+
+- `GET /api/sessions/{session_id}`
+  - Behavior: Lazy auto-close check executed; if `server_time >= ends_at`, marks session `"closed"`.
+  - Response: Session details with enrolled roster, counts (`present_count`, `pending_count`, `absent_count`), and time limits.
+
+---
+
+## 3. Continuous Front-Camera Sweep Check-in
+
+- `POST /api/sessions/{session_id}/checkin`
+  - Access: Student only (`role == "student"`, must be enrolled in session's class).
+  - Body: Multipart Form
+    - `attempt_id`: Unique UUID client idempotency key.
+    - `metadata`: JSON array containing frame headings and time offsets:
+      ```json
+      [
+        {"frame_index": 0, "offset_ms": 0, "heading": 0.0},
+        {"frame_index": 1, "offset_ms": 200, "heading": 12.5},
+        ...
+      ]
+      ```
+    - `frames`: Continuous recorded video frame images (multipart files `frame_0.jpg`, `frame_1.jpg`, ...).
+  - 9-Rule Ordered Verification Pipeline:
+    1. **Auth & Window**: Session open, `now <= ends_at + 5s` grace.
+    2. **Limits**: Unique `attempt_id`, student attempts $\le 3$, at most 1 VERIFIED record per student.
+    3. **Quality**: Laplacian variance $\ge 100$, luminance $40 \dots 220$.
+    4. **Sweep Evidence**: $\ge 12$ frames, 4–15s duration, monotonic heading, gaps $\le 25^\circ$, total span $\ge 150^\circ$, visual continuity.
+    5. **Self Match**: Early frames ($\le 30^\circ$) matched with student template: $\ge 0.72$ pass, $0.50 \dots 0.71$ flagged, $< 0.50$ fail.
+    6. **Neighbour Presence**: $\ge 1$ distinct classmate face detected in early frames within 3 face-widths.
+    7. **Lecturer Identification**: Late frames ($\ge 150^\circ$): face with IPD $\ge 30\text{px}$ matched (Pass); person detected with IPD $< 30\text{px}$ (**FLAGGED** for lecturer review); no person detected (Fail).
+    8. **Fraud Signals**: dHash perceptual near-duplicate check.
+    9. **Decision**:
+       - `VERIFIED` $\to$ Marks attendance `present`, logs audit event.
+       - `FLAGGED` $\to$ Stores key-frame filmstrip in private storage (7-day retention), adds to Lecturer Review Queue.
+       - `REJECTED` $\to$ Purges raw frames, returns specific plain-language reason code.
+  - Response:
+    ```json
+    {
+      "status": "verified" | "flagged" | "rejected",
+      "attempt_id": string,
+      "reason_codes": string[],
+      "decision_rule": string,
+      "metrics": object,
+      "filmstrip_urls": string[]
+    }
+    ```
+
+---
+
+## 4. Lecturer Review Queue & Overrides
+
+- `GET /api/sessions/{session_id}/review-queue`
+  - Access: Lecturer only.
+  - Response: List of flagged attempts containing `student_name`, `student_email`, `reason_codes`, and signed URLs for filmstrip key frames.
+
+- `POST /api/sessions/{session_id}/review/{attempt_id}`
+  - Access: Lecturer only.
+  - Request: `{ "decision": "verified" | "rejected", "note"?: string }`
+  - Behavior: If `verified`, updates student attendance to `present`. Audits action and broadcasts WebSocket update.
+
+- `PATCH /api/sessions/{session_id}/attendance/{student_id}`
+  - Access: Lecturer only (manual roll-call override / opt-out route).
+  - Request: `{ "status": "present" | "absent" | "pending", "note"?: string }`
+  - Behavior: Directly updates record with required audit note.
+
+- `POST /api/sessions/{session_id}/finalize`
+  - Access: Lecturer only.
+  - Request: `{ "mark_pending_absent"?: boolean }` (default `true`)
+  - Behavior: Sets session status to `"finalized"`, converts remaining `"pending"` students to `"absent"`, generates student notifications, and publishes record.
+
+- `GET /api/reports/sessions/{session_id}`
+  - Response: CSV text, print-ready HTML report, and attendance summary.
+
+- `GET /api/audit?session_id=<id>`
+  - Response: Full chronological immutable audit trail.
+
+---
+
+## 5. Real-Time WebSockets
+
+- Endpoint: `GET /ws?ticket=<ticket>`
+- Events:
+  - `session.created` — Broadcast when lecturer launches a session.
+  - `attendance.changed` — Emitted on verified check-in or review queue decision.
+  - `session.closed` — Emitted when session reaches `ends_at`. Payload:
+    ```json
+    {
+      "session_id": string,
+      "present": int,
+      "needs_review": int,
+      "absent": int,
+      "rejected_attempts": int,
+      "total_enrolled": int
+    }
+    ```
+  - `session.finalized` — Emitted on lecturer final confirmation.
+  - `notification.created` — Sent privately to affected student.
+

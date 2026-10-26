@@ -1,0 +1,6 @@
+data/raw/
+*.jpg
+*.jpeg
+*.png
+results/raw_results.csv
+results/*.csv

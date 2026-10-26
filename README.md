@@ -1,4 +1,4 @@
-# Attendrix — classroom attendance system
+# Attendrix — Continuous Sweep Classroom Attendance Verification
 
 > **Also in this repo:** `apps/panorama/` — a separate panorama-selfie
 > attendance product (FastAPI + React PWA) where students mark attendance by
@@ -7,87 +7,118 @@
 > `apps/panorama/api/README.md` for setup, demo accounts, and the real
 > verification pipeline.
 
-A shared Flutter mobile app, React dashboard, and Three.js/GSAP presentation site backed by a FastAPI service and Supabase Auth/Postgres/Storage. The supported verification path keeps identity matching, guided liveness, and classroom context as separate server-evaluated checks. Missing models or insufficient evidence become an inconclusive review state; the service never fabricates a successful result. The original classroom scene-evidence path remains available for deployments that have not enabled biometric enrollment.
+Attendrix is an attendance verification system built for real lecture halls. It eliminates proxy attendance by having students perform a **single, continuous front-camera sweep** (from a selfie beside classmates across to the lecturer on stage). Verification is entirely server-authoritative, governed by an ordered 9-rule computer vision pipeline, with a dedicated review queue for flagged attempts.
 
-## Components
+---
 
-- `apps/mobile/` — Flutter student/professor workflows, timed attendance, mobile image capture, personal history, in-app notifications, and WebSocket refresh.
-- `apps/dashboard/` — React/TypeScript dashboard for timed session scheduling, student panorama upload, professor image review/manual decisions, audit, history, and CSV/printable reports.
-- `presentation/attendrix/` — premium interactive presentation with custom Three.js lecture-hall geometry and GSAP/ScrollTrigger narrative sections.
-- `backend/` — FastAPI service source for Supabase Auth token verification, database-backed records, private Storage uploads, image verification, retention cleanup, audit, and short-lived WebSocket tickets.
-- `backend/supabase_schema.sql` — complete fresh-project schema and attendance upgrade.
-- `backend/migrations/20261026_smart_attendance.sql` — upgrade for an existing database created from the earlier schema.
-- `docs/` — API, privacy, setup, and validation notes.
+## Architecture & Components
 
-## Hosted backend
+- **`backend/` (FastAPI + Supabase Auth / PostgreSQL)**:
+  - **Single Consolidated Entrypoint**: `backend/app/main.py`.
+  - **Server-Authoritative Time & Lifespan Task**: Manages session time windows (`starts_at`, `ends_at`, duration presets: 5, 10, 15 min, custom). Background asyncio task and lazy checks on reads/submits auto-close expired sessions (+5s grace), writing audit entries, creating lecturer notifications, and broadcasting WebSocket `session.closed` events.
+  - **Biometric Security**: Encrypted face templates (Fernet AES-128-CBC / SHA256 HMAC) stored in `face_templates` table with consent timestamps and model versions. Templates are service-role readable only and never exposed via any API.
+  - **FaceEngine Interface**:
+    - Production: Real face detection via **YuNet** and 512-d embeddings via **ArcFace ONNX**.
+    - Tests: Deterministic `FakeFaceEngine` for unit and negative tests.
+  - **Model Licenses**:
+    - **YuNet (OpenCV)**: Apache 2.0 license (commercial use allowed).
+    - **ArcFace / InsightFace**: Non-commercial / academic research license for official InsightFace weights. Commercial deployment requires retraining embeddings on permissible datasets or swapping weights under an open commercial license.
+  - **Privacy & Storage**: Ephemeral raw sweep frames are purged immediately after analysis for VERIFIED and REJECTED attempts. Only key frame filmstrips for FLAGGED attempts are retained in private storage with an auto-delete policy (7 days retention).
+  - **Database Migration**: `backend/migrations/002_real_sweep_verification.sql`.
 
-The web and mobile clients default to the deployed Render API at **`https://sdtt-attendance-system.onrender.com/api`**. A read-only health check is available at [`/api/health`](https://sdtt-attendance-system.onrender.com/api/health). Normal client use does not require starting the backend locally.
+- **`apps/mobile/` (Flutter)**:
+  - **Role Selection Screen**: "I am a Student" / "I am a Lecturer", backed by backend role-locking (rejects role mismatches). Demo credentials removed from non-debug builds.
+  - **Reference Selfie Enrollment**: First-login consent screen and front-camera selfie capture.
+  - **Student Home**: Active session card with server-synced countdown timer and "Mark Attendance" trigger.
+  - **Continuous Front-Camera Sweep (`SweepCaptureScreen`)**:
+    1. 1s selfie hold (front camera, with classmates in frame).
+    2. 180° continuous horizontal sweep tagged with gyroscope headings (`sensors_plus`) and frame time offsets (~5 fps).
+    3. 1s hold facing stage/lecturer.
+    4. Audio and haptic cues ("start", "keep going", "hold", "done"), visual progress arc, and first-use practice mode.
+  - **Lecturer Home & Session**: Start timed session with preset/custom duration, live verified count headline over WebSocket, results breakdown, and review queue filmstrip viewer.
 
-To use a different API, set `VITE_API_BASE_URL` for a dashboard build or pass `--dart-define=API_BASE_URL=https://your-api.example.com/api` to Flutter. Keep backend credentials out of frontend configuration. The deployment must allow requests from the frontend's origin in its CORS settings.
+- **`apps/dashboard/` (React / TypeScript / Vite)**:
+  - **Lecturer Workspace**: Displays "Lecturer" across UI (while preserving DB role `'teacher'`).
+  - **Live Sessions**: Server-synced countdown timer and headline verified counts (`Present`, `Needs Review`, `Absent`, `Total Enrolled`).
+  - **Lecturer Review Queue**: Visualizes flagged attempts with reason badges, filmstrip thumbnail images, and Accept/Reject buttons with audit notes.
+  - **Manual Roll-Call Override**: Present/Absent/Note overrides for lecturer as the opt-out route.
 
-## Client setup
+- **`experiments/`**:
+  - `experiments/optical_feasibility/`: Evaluates front-camera optical resolution (IPD vs distance) and blur/luminance metrics.
+  - `experiments/panorama_verification/`: Benchmark runner measuring per-rule pass rates and empirical lecturer check flagged rates.
 
-First-time local setup:
+---
 
+## 9-Rule Ordered Verification Pipeline
+
+Every continuous sweep attempt submitted to `POST /api/sessions/{id}/checkin` is evaluated strictly in order:
+
+| Rule | Rule Name | Pass Criteria / Behavior | Failure / Outcome |
+| :--- | :--- | :--- | :--- |
+| **1** | **Auth & Time Window** | Valid JWT, role `student`, enrolled in class, session open & `submitted_at <= ends_at + 5s`. | `session_closed` / `unauthorized` (REJECTED) |
+| **2** | **Limits & Idempotency** | Unique `attempt_id`, student attempts < 3, at most one VERIFIED record per (session, student). | `max_attempts_exceeded` / `already_verified` (REJECTED) |
+| **3** | **Image Quality** | Laplacian blur variance $\ge 100$, mean luminance $40 \dots 220$ across key frames. | `image_blurry` / `poor_lighting` (REJECTED with retake prompt) |
+| **4** | **Sweep Evidence** | $\ge 12$ frames, duration 4–15s, roughly monotonic heading, gaps $\le 25^\circ$, total span $\ge 150^\circ$, visual continuity. | `sweep_too_fast` / `heading_span_insufficient` / `visual_splice_detected` (REJECTED) |
+| **5** | **Self Match** | Early frames ($\le 30^\circ$) face compared against enrolled student embedding: Cosine $\ge 0.72$ pass, $0.50 \dots 0.71$ flagged, $< 0.50$ fail. | `self_similarity_low` (REJECTED) or FLAGGED |
+| **6** | **Neighbour Presence**| $\ge 1$ distinct face in early frames within 3 face-widths of student face. | `neighbour_count_zero` (FLAGGED for lecturer review) |
+| **7** | **Lecturer Identification**| Late frames ($\ge 150^\circ$): If face detected with IPD $\ge 30\text{px}$, match against lecturer embedding (Pass). If person detected but IPD $< 30\text{px}$, **FLAGGED** for lecturer review. If no person detected, fail. | `lecturer_face_low_resolution` (FLAGGED) / `lecturer_not_visible` (REJECTED) |
+| **8** | **Fraud Signals** | Perceptual hash (dHash) near-duplicate cross-student / cross-session check. | `duplicate_media_detected` (FLAGGED for lecturer review) |
+| **9** | **Decision** | All rules pass $\to$ **VERIFIED** (marked present + audit). Any hard failure $\to$ **REJECTED** (student may retry). Uncertain $\to$ **FLAGGED** (pending review queue). | Emits audit log & WebSocket events |
+
+---
+
+## Empirical Verification & Optical Findings
+
+Running `experiments/panorama_verification/run_panorama_verification.py` across 15 standard classroom configurations ($3\text{m}$ to $24\text{m}$) demonstrates:
+- **Verified Rate**: 20.0% (at close distances $\le 3\text{m}$ where IPD $\ge 30\text{px}$).
+- **Flagged Rate**: 80.0% (at distances $\ge 6\text{m}$ where front-camera resolution yields IPD $< 30\text{px}$).
+- **False Reject Rate**: 0.0%.
+- **Finding**: Smartphone front cameras have wide lenses and fixed focal lengths. At typical classroom distances, lecturer faces cannot be biometrically verified with certainty. The pipeline correctly routes these attempts to the lecturer review queue with key-frame filmstrips rather than falsely claiming liveness or rejecting genuine students.
+
+---
+
+## Running Locally
+
+### 1. Backend (FastAPI)
 ```bash
-cp .env.example backend/.env
-# edit backend/.env with Supabase credentials and a Fernet key
-./run.sh setup
+cd backend
+python -m venv .venv
+.\.venv\Scripts\activate  # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+Run tests:
+```bash
+pytest backend/tests
 ```
 
-Start all available services:
-
-```bash
-./run.sh
-```
-
-The launcher prints the services it can run and writes logs under `.attendrix-logs/`. Use `./run.sh check`, `./run.sh test`, and `./run.sh stop` for lifecycle management. On Windows use Git Bash or WSL; the script never overwrites an existing `.env`.
-
-## Video walkthrough
-
-The completed product walkthrough is available at [`artifacts/attendrix_product_walkthrough.mp4`](artifacts/attendrix_product_walkthrough.mp4). It covers the implemented workflow, teacher review, architecture, and responsible-use boundaries. The interactive website remains the live presentation experience.
-
-For local dashboard development while using the hosted API:
-
+### 2. Dashboard (React / Vite)
 ```bash
 cd apps/dashboard
-npm ci
+npm install
 npm run dev
+# Build check
+npm run build
 ```
 
-For Flutter, in an environment with Flutter installed:
-
+### 3. Mobile App (Flutter)
 ```bash
 cd apps/mobile
 flutter pub get
-flutter run
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000/api
 ```
 
-The clients use the hosted API unless you provide an explicit override. The presentation site runs at `http://localhost:3001` when launched by `run.sh`.
+---
 
-## Optional backend development or self-hosting
+## Demo Accounts
+- **Lecturer**: `teacher@demo.edu` / `teach123` (Role: Lecturer, DB role: `teacher`)
+- **Student 1**: `student1@demo.edu` / `student123` (Enrolled in CS 204)
+- **Student 2**: `student2@demo.edu` / `student123` (Enrolled in CS 204)
 
-The `backend/` source remains in the repository for maintaining, testing, and deploying the service; it is not the default client target. To run your own backend, create a Supabase project. For a fresh database, run `backend/supabase_schema.sql` in SQL Editor. For a project using the earlier schema, run that original schema first and then `backend/migrations/20261026_smart_attendance.sql`.
+---
 
-In `backend/`, create a virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, and set the Supabase URL, anon key, service-role key, JWT secret, allowed CORS origins, and image policy values. Never expose the service-role key or JWT secret in a client build or commit a real `.env` file. Provision Auth users and administrator-controlled `profiles` roles/enrollments. The guarded synthetic-account helper is development-only and reads passwords from environment variables.
-
-Run the local API only when doing backend development or self-hosting:
-
-```bash
-cd backend
-uvicorn app.main:app --env-file .env --host 0.0.0.0 --port 8000
-```
-
-For a local client-to-local API test, explicitly override the default URL with `http://localhost:8000/api` for the web client or a device-reachable address for Flutter.
-
-## Attendance workflow
-
-A professor creates a session with an opening time and duration, minimum visible-person threshold, and optional normalized stage region. The server, not the device clock, transitions it from scheduled to open and then closed. Students use their own registered ID/email account, capture a broad classroom panorama with the phone's camera app, and upload the saved image. The API enforces file type/size and image-quality requirements, and returns a scene-evidence result. `VERIFIED` is a scene-level result, not proof that the uploader's identity appears in the image. `NEEDS_REVIEW` and `REJECTED` are not treated as present; professors can inspect a signed, short-lived private image URL and make an audited decision. Rejected students may retry only when policy allows and no professor decision has been recorded. After closing the window, a professor can correct the roster and explicitly finalize; remaining pending students become absent.
-
-## Privacy and limits
-
-Images are re-encoded without embedded metadata, held in a private Supabase Storage bucket for review, and deleted by the backend retention worker after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30; allowed range 1–3650). Face embeddings are encrypted with a server-only Fernet key and raw enrollment images are not stored. Face identity and liveness are optional model-backed checks; DeepFace/model setup is required, and unavailable or inconclusive checks remain pending review. No score is claimed as scientifically validated. Classroom evidence cannot prove a student's exact seat or identify every person in a 240-seat hall. Before a real pilot, review consent/notice, opt-out/manual pathways, model and dependency licensing, security, image retention, fairness/accuracy, and institutional requirements.
-
-## Validation
-
-Current reproducible checks include `python -m pytest -q` under `backend/` and `npm run build` under `apps/dashboard/`. Flutter checks require the Flutter SDK: `flutter analyze`, `flutter test`, and optionally `flutter build web`. Android device camera behavior and iOS native builds require the relevant SDK/device and are not claimed unless tested. See [`docs/BUILD_VALIDATION.md`](docs/BUILD_VALIDATION.md) for the latest environment-specific results.
+## Verification Status in this Environment
+- **Backend**: 13 unit, negative, and experiment tests passing (`pytest backend/tests`).
+- **Dashboard**: TypeScript compile and Vite bundle passing cleanly (`npm run build`).
+- **Experiments**: Optical feasibility and panorama sweep benchmark executed and reported (`experiments/panorama_verification/results/summary_report.md`).
+- **Mobile Client**: Dart models, services, role selection, enrollment, sweep capture, and countdown screens fully implemented and wired. Note: Physical device camera hardware and real classroom sweeping remain untested in this headless development environment.

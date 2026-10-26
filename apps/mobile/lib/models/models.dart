@@ -5,7 +5,7 @@ String _string(dynamic value, [String fallback = '']) =>
 int _int(dynamic value) =>
     value is int ? value : int.tryParse(_string(value)) ?? 0;
 double _double(dynamic value) =>
-    value is num ? value.toDouble() : double.tryParse(_string(value)) ?? 0;
+    value is num ? value.toDouble() : double.tryParse(_string(value)) ?? 0.0;
 Map<String, dynamic> _map(dynamic value) =>
     value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
 
@@ -15,23 +15,37 @@ class User {
     required this.name,
     required this.email,
     required this.role,
-    this.registrationId,
+    this.rollNumber,
+    this.studentId,
+    this.registrationLocked = false,
   });
+
   final String id;
   final String name;
   final String email;
-  final String role;
-  final String? registrationId;
+  final String role; // 'teacher', 'student', or 'controller'
+  final String? rollNumber;
+  final String? studentId;
+  final bool registrationLocked;
+
   bool get isTeacher => role.toLowerCase() == 'teacher';
-  String get displayRole => role == 'controller' ? 'Controller' : isTeacher ? 'Teacher' : 'Student';
+  bool get isStudent => role.toLowerCase() == 'student';
+  bool get isController => role.toLowerCase() == 'controller' || role.toLowerCase() == 'admin';
+
+  String get displayRole {
+    if (isTeacher) return 'Lecturer';
+    if (isController) return 'Academic Controller';
+    return 'Student';
+  }
+
   factory User.fromJson(Map<String, dynamic> json) => User(
         id: _string(json['id']),
         name: _string(json['name'], 'User'),
         email: _string(json['email']),
         role: _string(json['role'], 'student'),
-        registrationId: json['registration_id'] == null
-            ? null
-            : _string(json['registration_id']),
+        rollNumber: json['roll_number']?.toString(),
+        studentId: json['student_id']?.toString(),
+        registrationLocked: json['registration_locked'] == true,
       );
 }
 
@@ -39,6 +53,7 @@ class AuthSession {
   const AuthSession({required this.accessToken, required this.user});
   final String accessToken;
   final User user;
+
   factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
         accessToken: _string(json['access_token']),
         user: User.fromJson(_map(json['user'])),
@@ -50,69 +65,32 @@ class Classroom {
     required this.id,
     required this.name,
     this.code = '',
-    this.teacherName = '',
     this.section = '',
     this.roomNumber = '',
     this.roomPhoto = '',
+    this.teacherName = '',
     this.studentCount = 0,
   });
+
   final String id;
   final String name;
   final String code;
-  final String teacherName;
   final String section;
   final String roomNumber;
   final String roomPhoto;
+  final String teacherName;
   final int studentCount;
+
   factory Classroom.fromJson(Map<String, dynamic> json) => Classroom(
         id: _string(json['id'] ?? json['class_id']),
-        name: _string(json['name'] ?? json['title'],
-            'Class ${json['id'] ?? ''}'),
+        name: _string(json['name'] ?? json['title'], 'Class'),
         code: _string(json['code']),
-        teacherName: _string(json['teacher_name']),
-        section: _string(json['section']),
-        roomNumber: _string(json['room_number'] ?? json['room']),
+        section: _string(json['section'], 'Section A'),
+        roomNumber: _string(json['room_number'], 'LH-101'),
         roomPhoto: _string(json['room_photo']),
+        teacherName: _string(json['teacher_name']),
         studentCount: _int(json['student_count']),
       );
-}
-
-class ControllerStudent {
-  const ControllerStudent({required this.id, required this.name, required this.email, this.rollNumber = '', this.classes = const [], this.registrationLocked = false});
-  final String id;
-  final String name;
-  final String email;
-  final String rollNumber;
-  final List<String> classes;
-  final bool registrationLocked;
-  factory ControllerStudent.fromJson(Map<String, dynamic> json) => ControllerStudent(
-    id: _string(json['id']), name: _string(json['name'], 'Student'), email: _string(json['email']),
-    rollNumber: _string(json['roll_number'] ?? json['registration_id']),
-    classes: (json['classes'] is List ? (json['classes'] as List).map(_string).toList() : <String>[]),
-    registrationLocked: json['registration_locked'] == true || json['face_enrolled'] == true,
-  );
-}
-
-class AttendanceVerifyResult {
-  const AttendanceVerifyResult({required this.status, required this.message, this.faceConfidence, this.faceMatch = false, this.roomMatch = false, this.livenessStatus = 'INCONCLUSIVE'});
-  final String status;
-  final String message;
-  final double? faceConfidence;
-  final bool faceMatch;
-  final bool roomMatch;
-  final String livenessStatus;
-  bool get isPresent => status == 'CONFIRMED';
-  bool get isFlagged => status == 'PENDING_REVIEW';
-  factory AttendanceVerifyResult.fromJson(Map<String, dynamic> json) {
-    final identity = _map(json['identity']);
-    final liveness = _map(json['liveness']);
-    final classroom = _map(json['classroom_context']);
-    return AttendanceVerifyResult(
-      status: _string(json['status'], 'PENDING_REVIEW'), message: _string(json['reason'], 'Verification result is available for review.'),
-      faceConfidence: identity['similarity'] == null ? null : _double(identity['similarity']), faceMatch: _string(identity['status']) == 'VERIFIED',
-      roomMatch: _string(classroom['status']) == 'VERIFIED', livenessStatus: _string(liveness['status'], 'INCONCLUSIVE'),
-    );
-  }
 }
 
 class AttendanceRecord {
@@ -121,79 +99,45 @@ class AttendanceRecord {
     required this.studentName,
     required this.status,
     this.note = '',
-    this.confidence,
     this.sessionId,
     this.className,
     this.updatedAt,
-    this.verificationStatus,
-    this.verificationSource,
   });
+
   final String studentId;
   final String studentName;
-  final String status;
+  final String status; // 'present', 'absent', 'pending'
   final String note;
-  final double? confidence;
   final String? sessionId;
   final String? className;
   final DateTime? updatedAt;
-  final String? verificationStatus;
-  final String? verificationSource;
+
   bool get isPresent => status == 'present';
   bool get isAbsent => status == 'absent';
   bool get isPending => status == 'pending';
-  AttendanceRecord copyWith({String? status, String? note, double? confidence}) =>
+
+  AttendanceRecord copyWith({String? status, String? note}) =>
       AttendanceRecord(
         studentId: studentId,
         studentName: studentName,
         status: status ?? this.status,
         note: note ?? this.note,
-        confidence: confidence ?? this.confidence,
         sessionId: sessionId,
         className: className,
         updatedAt: updatedAt,
-        verificationStatus: verificationStatus,
-        verificationSource: verificationSource,
       );
+
   factory AttendanceRecord.fromJson(Map<String, dynamic> json) =>
       AttendanceRecord(
         studentId: _string(json['student_id'] ?? json['id']),
         studentName: _string(json['student_name'] ?? json['name'], 'Student'),
         status: _string(json['status'], 'pending'),
         note: _string(json['note']),
-        confidence:
-            json['confidence'] == null ? null : _double(json['confidence']),
-        sessionId: json['session_id'] == null
+        sessionId: json['session_id'] != null ? _string(json['session_id']) : null,
+        className: json['class_name'] != null ? _string(json['class_name']) : null,
+        updatedAt: json['updated_at'] == null
             ? null
-            : _string(json['session_id']),
-        className: json['class_name'] == null
-            ? null
-            : _string(json['class_name']),
-        updatedAt: DateTime.tryParse(_string(json['updated_at'])),
-        verificationStatus: json['verification_status'] == null
-            ? null
-            : _string(json['verification_status']),
-        verificationSource: json['verification_source'] == null
-            ? null
-            : _string(json['verification_source']),
-      );
-}
-
-class Suggestion {
-  const Suggestion({
-    required this.studentId,
-    required this.studentName,
-    required this.confidence,
-    this.status = 'present',
-  });
-  final String studentId;
-  final String studentName;
-  final double confidence;
-  final String status;
-  factory Suggestion.fromJson(Map<String, dynamic> json) => Suggestion(
-        studentId: _string(json['student_id'] ?? json['id']),
-        studentName: _string(json['student_name'] ?? json['name'], 'Student'),
-        confidence: _double(json['confidence']),
-        status: 'present',
+            : DateTime.tryParse(_string(json['updated_at'])),
       );
 }
 
@@ -202,92 +146,371 @@ class AttendanceSession {
     required this.id,
     required this.classId,
     required this.className,
+    required this.classCode,
     required this.status,
-    required this.records,
-    this.title = '',
-    this.professorName = '',
-    this.opensAt,
-    this.deadlineAt,
-    this.createdAt,
+    required this.createdAt,
+    this.startsAt,
+    this.endsAt,
+    this.durationMinutes = 10,
+    this.serverTime,
     this.finalizedAt,
-    this.submission,
+    this.records = const [],
+    this.verifiedCount = 0,
+    this.flaggedCount = 0,
   });
+
   final String id;
   final String classId;
   final String className;
-  final String status;
-  final List<AttendanceRecord> records;
-  final String title;
-  final String professorName;
-  final DateTime? opensAt;
-  final DateTime? deadlineAt;
-  final DateTime? createdAt;
+  final String classCode;
+  final String status; // 'open', 'closed', 'finalized'
+  final DateTime createdAt;
+  final DateTime? startsAt;
+  final DateTime? endsAt;
+  final int durationMinutes;
+  final DateTime? serverTime;
   final DateTime? finalizedAt;
-  final Map<String, dynamic>? submission;
-  bool get isOpen => status.toLowerCase() == 'open';
+  final List<AttendanceRecord> records;
+  final int verifiedCount;
+  final int flaggedCount;
+
+  bool get isOpen => status == 'open';
+  bool get isClosed => status == 'closed';
+  bool get isFinalized => status == 'finalized';
+
+  int get presentCount => records.where((r) => r.isPresent).length;
+  int get absentCount => records.where((r) => r.isAbsent).length;
+  int get pendingCount => records.where((r) => r.isPending).length;
+
   factory AttendanceSession.fromJson(Map<String, dynamic> json) {
-    final rawRecords =
-        json['attendance'] ?? json['records'] ?? json['roster'] ?? <dynamic>[];
-    final list = rawRecords is List ? rawRecords : <dynamic>[];
+    final attRaw = json['attendance'];
+    final records = (attRaw is List ? attRaw : <dynamic>[])
+        .map((e) => AttendanceRecord.fromJson(_map(e)))
+        .toList();
+
+    final summary = _map(json['summary']);
     return AttendanceSession(
-      id: _string(json['id'] ?? json['session_id']),
-      classId: _string(json['class_id'] ?? _map(json['class'])['id']),
-      className: _string(json['class_name'] ?? _map(json['class'])['name'],
-          'Attendance session'),
+      id: _string(json['id']),
+      classId: _string(json['class_id']),
+      className: _string(json['class_name'], 'Class'),
+      classCode: _string(json['class_code']),
       status: _string(json['status'], 'open'),
-      records: list.map((e) => AttendanceRecord.fromJson(_map(e))).toList(),
-      title: _string(json['title']),
-      professorName: _string(json['professor_name']),
-      opensAt: DateTime.tryParse(_string(json['opens_at'])),
-      deadlineAt: DateTime.tryParse(_string(json['deadline_at'])),
-      createdAt: DateTime.tryParse(_string(json['created_at'])),
-      finalizedAt: DateTime.tryParse(_string(json['finalized_at'])),
-      submission: json['submission'] is Map ? _map(json['submission']) : null,
+      createdAt: DateTime.tryParse(_string(json['created_at'])) ?? DateTime.now(),
+      startsAt: json['starts_at'] == null ? null : DateTime.tryParse(_string(json['starts_at'])),
+      endsAt: json['ends_at'] == null ? null : DateTime.tryParse(_string(json['ends_at'])),
+      durationMinutes: _int(json['duration_minutes'] ?? 10),
+      serverTime: json['server_time'] == null ? null : DateTime.tryParse(_string(json['server_time'])),
+      finalizedAt: json['finalized_at'] == null
+          ? null
+          : DateTime.tryParse(_string(json['finalized_at'])),
+      records: records,
+      verifiedCount: _int(summary['verified_count'] ?? summary['present'] ?? 0),
+      flaggedCount: _int(summary['flagged_count'] ?? 0),
     );
   }
 }
 
-class AttendanceSummary {
-  const AttendanceSummary({
-    required this.total,
-    required this.present,
-    required this.absent,
-    required this.pending,
-    required this.percentage,
+class CheckinReviewItem {
+  const CheckinReviewItem({
+    required this.attemptId,
+    required this.sessionId,
+    required this.studentId,
+    required this.studentName,
+    required this.studentEmail,
+    required this.state,
+    required this.reasonCode,
+    required this.filmstripUrls,
+    required this.metrics,
+    required this.createdAt,
   });
-  final int total;
+
+  final String attemptId;
+  final String sessionId;
+  final String studentId;
+  final String studentName;
+  final String studentEmail;
+  final String state;
+  final String reasonCode;
+  final List<String> filmstripUrls;
+  final Map<String, dynamic> metrics;
+  final DateTime createdAt;
+
+  factory CheckinReviewItem.fromJson(Map<String, dynamic> json) {
+    final urlsRaw = json['filmstrip_urls'];
+    final urls = (urlsRaw is List ? urlsRaw : <dynamic>[])
+        .map((e) => e.toString())
+        .toList();
+    return CheckinReviewItem(
+      attemptId: _string(json['attempt_id']),
+      sessionId: _string(json['session_id']),
+      studentId: _string(json['student_id']),
+      studentName: _string(json['student_name'], 'Student'),
+      studentEmail: _string(json['student_email']),
+      state: _string(json['state'], 'flagged'),
+      reasonCode: _string(json['error_code'] ?? json['reason_code'], 'FLAGGED'),
+      filmstripUrls: urls,
+      metrics: _map(json['metrics']),
+      createdAt: DateTime.tryParse(_string(json['created_at'])) ?? DateTime.now(),
+    );
+  }
+}
+
+class EnrollmentStatus {
+  const EnrollmentStatus({
+    required this.enrolled,
+    this.registrationLocked = false,
+    this.consentTimestamp,
+    this.modelVersion,
+    this.rollNumber,
+    this.studentId,
+    this.name,
+  });
+
+  final bool enrolled;
+  final bool registrationLocked;
+  final String? consentTimestamp;
+  final String? modelVersion;
+  final String? rollNumber;
+  final String? studentId;
+  final String? name;
+
+  factory EnrollmentStatus.fromJson(Map<String, dynamic> json) => EnrollmentStatus(
+        enrolled: json['enrolled'] == true,
+        registrationLocked: json['registration_locked'] == true,
+        consentTimestamp: json['consent_timestamp']?.toString(),
+        modelVersion: json['model_version']?.toString(),
+        rollNumber: json['roll_number']?.toString(),
+        studentId: json['student_id']?.toString(),
+        name: json['name']?.toString(),
+      );
+}
+
+class ControllerStudent {
+  const ControllerStudent({
+    required this.id,
+    required this.name,
+    required this.email,
+    required this.rollNumber,
+    required this.studentId,
+    required this.registrationLocked,
+    this.classes = const [],
+    this.biometricEnrolled = false,
+  });
+
+  final String id;
+  final String name;
+  final String email;
+  final String rollNumber;
+  final String studentId;
+  final bool registrationLocked;
+  final List<String> classes;
+  final bool biometricEnrolled;
+
+  factory ControllerStudent.fromJson(Map<String, dynamic> json) {
+    final clsRaw = json['classes'];
+    final clsList = (clsRaw is List ? clsRaw : <dynamic>[])
+        .map((e) => e.toString())
+        .toList();
+    return ControllerStudent(
+      id: _string(json['id']),
+      name: _string(json['name']),
+      email: _string(json['email']),
+      rollNumber: _string(json['roll_number']),
+      studentId: _string(json['student_id']),
+      registrationLocked: json['registration_locked'] == true,
+      classes: clsList,
+      biometricEnrolled: json['biometric_enrolled'] == true,
+    );
+  }
+}
+
+class AttendanceVerifyResult {
+  const AttendanceVerifyResult({
+    required this.status,
+    required this.faceMatch,
+    required this.faceConfidence,
+    required this.roomMatch,
+    this.sirDetected = true,
+    this.sirName = 'Lecturer',
+    this.crowdDetected = true,
+    this.crowdCount = 1,
+    this.crowdDensityPct = 100.0,
+    this.hallCapacity = 120,
+    this.hallType = '120-Seater Hall',
+    required this.message,
+  });
+
+  final String status;
+  final bool faceMatch;
+  final double faceConfidence;
+  final bool roomMatch;
+  final bool sirDetected;
+  final String sirName;
+  final bool crowdDetected;
+  final int crowdCount;
+  final double crowdDensityPct;
+  final int hallCapacity;
+  final String hallType;
+  final String message;
+
+  bool get isPresent => status == 'present';
+  bool get isFlagged => status == 'flagged' || status == 'pending';
+  bool get isRejected => status == 'absent' || status == 'rejected';
+
+  factory AttendanceVerifyResult.fromJson(Map<String, dynamic> json) =>
+      AttendanceVerifyResult(
+        status: _string(json['status'], 'pending'),
+        faceMatch: json['face_match'] == true,
+        faceConfidence: _double(json['face_confidence']),
+        roomMatch: json['room_match'] == true,
+        sirDetected: json['sir_detected'] == true,
+        sirName: _string(json['sir_name'], 'Lecturer'),
+        crowdDetected: json['crowd_detected'] == true,
+        crowdCount: _int(json['crowd_count']),
+        crowdDensityPct: _double(json['crowd_density_pct']),
+        hallCapacity: _int(json['hall_capacity']),
+        hallType: _string(json['hall_type'], '120-Seater Hall'),
+        message: _string(json['message']),
+      );
+}
+
+class StudentAttendanceEntry {
+  const StudentAttendanceEntry({
+    required this.sessionId,
+    required this.className,
+    required this.classCode,
+    required this.status,
+    this.note = '',
+    required this.createdAt,
+    this.startsAt,
+    this.endsAt,
+    this.updatedAt,
+  });
+
+  final String sessionId;
+  final String className;
+  final String classCode;
+  final String status;
+  final String note;
+  final DateTime createdAt;
+  final DateTime? startsAt;
+  final DateTime? endsAt;
+  final DateTime? updatedAt;
+
+  bool get isPresent => status == 'present';
+  bool get isAbsent => status == 'absent';
+  bool get isPending => status == 'pending';
+
+  factory StudentAttendanceEntry.fromJson(Map<String, dynamic> json) =>
+      StudentAttendanceEntry(
+        sessionId: _string(json['session_id']),
+        className: _string(json['class_name'], 'Class'),
+        classCode: _string(json['class_code']),
+        status: _string(json['status'], 'pending'),
+        note: _string(json['note']),
+        createdAt: DateTime.tryParse(_string(json['created_at'] ?? json['session_created_at'])) ??
+            DateTime.now(),
+        startsAt: json['starts_at'] == null ? null : DateTime.tryParse(_string(json['starts_at'])),
+        endsAt: json['ends_at'] == null ? null : DateTime.tryParse(_string(json['ends_at'])),
+        updatedAt: json['updated_at'] == null
+            ? (json['created_at'] != null ? DateTime.tryParse(_string(json['created_at'])) : null)
+            : DateTime.tryParse(_string(json['updated_at'])),
+      );
+}
+
+class StudentAttendanceSummary {
+  const StudentAttendanceSummary({
+    required this.present,
+    required this.total,
+    required this.percentage,
+    this.absent = 0,
+    this.pending = 0,
+  });
+
   final int present;
+  final int total;
+  final double percentage;
   final int absent;
   final int pending;
-  final double percentage;
-  factory AttendanceSummary.fromJson(Map<String, dynamic> json) {
-    final source =
-        _map(json['summary']).isNotEmpty ? _map(json['summary']) : json;
-    return AttendanceSummary(
-      total: _int(source['total'] ??
-          source['total_finalized'] ??
-          source['total_sessions']),
-      present: _int(source['present']),
-      absent: _int(source['absent']),
-      pending: _int(source['pending']),
-      percentage:
-          _double(source['percentage'] ?? source['attendance_percentage']),
+
+  factory StudentAttendanceSummary.fromJson(
+      Map<String, dynamic> json, List<StudentAttendanceEntry> entries) {
+    final present = _int(json['present']);
+    final total = _int(json['total']);
+    final percentage = _double(json['percentage']);
+    final absent = json.containsKey('absent')
+        ? _int(json['absent'])
+        : entries.where((e) => e.isAbsent).length;
+    final pending = json.containsKey('pending')
+        ? _int(json['pending'])
+        : entries.where((e) => e.isPending).length;
+
+    return StudentAttendanceSummary(
+      present: present,
+      total: total,
+      percentage: percentage,
+      absent: absent,
+      pending: pending,
     );
   }
 }
 
 class StudentAttendance {
-  const StudentAttendance({required this.entries, required this.summary});
-  final List<AttendanceRecord> entries;
-  final AttendanceSummary summary;
+  const StudentAttendance({
+    required this.present,
+    required this.total,
+    required this.percentage,
+    required this.entries,
+    required this.summary,
+  });
+
+  final int present;
+  final int total;
+  final double percentage;
+  final List<StudentAttendanceEntry> entries;
+  final StudentAttendanceSummary summary;
+
   factory StudentAttendance.fromJson(Map<String, dynamic> json) {
-    final raw = json['entries'] ?? json['attendance'] ?? <dynamic>[];
+    final summaryJson = _map(json['summary']);
+    final entriesRaw = json['entries'];
+    final list = (entriesRaw is List ? entriesRaw : <dynamic>[])
+        .map((e) => StudentAttendanceEntry.fromJson(_map(e)))
+        .toList();
+    final summary = StudentAttendanceSummary.fromJson(summaryJson, list);
     return StudentAttendance(
-      entries: (raw is List ? raw : <dynamic>[])
-          .map((e) => AttendanceRecord.fromJson(_map(e)))
-          .toList(),
-      summary: AttendanceSummary.fromJson(json),
+      present: summary.present,
+      total: summary.total,
+      percentage: summary.percentage,
+      entries: list,
+      summary: summary,
     );
+  }
+}
+
+class RealtimeEvent {
+  const RealtimeEvent({
+    required this.type,
+    this.data,
+  });
+
+  final String type;
+  final dynamic data;
+
+  factory RealtimeEvent.fromJson(dynamic raw) {
+    if (raw is String) {
+      try {
+        raw = jsonDecode(raw);
+      } catch (_) {
+        return const RealtimeEvent(type: 'unknown');
+      }
+    }
+    if (raw is Map) {
+      return RealtimeEvent(
+        type: _string(raw['type'], 'unknown'),
+        data: raw['data'] ?? raw['payload'],
+      );
+    }
+    return const RealtimeEvent(type: 'unknown');
   }
 }
 
@@ -295,34 +518,65 @@ class AppNotification {
   const AppNotification({
     required this.id,
     required this.title,
-    required this.message,
-    required this.read,
-    this.createdAt,
+    required this.body,
+    required this.type,
+    this.sessionId,
+    required this.createdAt,
+    this.readAt,
   });
+
   final String id;
   final String title;
-  final String message;
-  final bool read;
-  final DateTime? createdAt;
+  final String body;
+  final String type;
+  final String? sessionId;
+  final DateTime createdAt;
+  final DateTime? readAt;
+
+  bool get read => readAt != null;
+  String get message => body;
+
+  AppNotification copyWith({DateTime? readAt}) => AppNotification(
+        id: id,
+        title: title,
+        body: body,
+        type: type,
+        sessionId: sessionId,
+        createdAt: createdAt,
+        readAt: readAt ?? this.readAt,
+      );
+
   factory AppNotification.fromJson(Map<String, dynamic> json) =>
       AppNotification(
         id: _string(json['id']),
-        title: _string(json['title'], 'Attendance update'),
-        message: _string(json['message'] ?? json['body']),
-        read: json['read'] == true ||
-            json['is_read'] == true ||
-            json['read_at'] != null,
-        createdAt: DateTime.tryParse(_string(json['created_at'])),
+        title: _string(json['title']),
+        body: _string(json['body']),
+        type: _string(json['type']),
+        sessionId: json['session_id'] != null ? _string(json['session_id']) : null,
+        createdAt: DateTime.tryParse(_string(json['created_at'])) ?? DateTime.now(),
+        readAt: json['read_at'] == null ? null : DateTime.tryParse(_string(json['read_at'])),
       );
 }
 
-class RealtimeEvent {
-  const RealtimeEvent({required this.type, required this.data});
-  final String type;
-  final Map<String, dynamic> data;
-  factory RealtimeEvent.fromJson(dynamic value) {
-    final map = value is String ? jsonDecode(value) : value;
-    final json = _map(map);
-    return RealtimeEvent(type: _string(json['type']), data: _map(json['data']));
-  }
+class SessionReport {
+  const SessionReport({
+    required this.session,
+    required this.rows,
+    required this.csv,
+    required this.pdfHtml,
+  });
+
+  final Map<String, dynamic> session;
+  final List<Map<String, dynamic>> rows;
+  final String csv;
+  final String pdfHtml;
+
+  factory SessionReport.fromJson(Map<String, dynamic> json) => SessionReport(
+        session: _map(json['session']),
+        rows: (json['rows'] is List ? json['rows'] as List : <dynamic>[])
+            .map((e) => _map(e))
+            .toList(),
+        csv: _string(json['csv']),
+        pdfHtml: _string(json['pdf_html']),
+      );
 }

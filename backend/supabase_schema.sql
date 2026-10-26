@@ -47,12 +47,15 @@ create table if not exists public.enrollments (
 
 -- sessions
 create table if not exists public.sessions (
-  id           uuid primary key default uuid_generate_v4(),
-  class_id     uuid not null references public.classes(id),
-  status       text not null check (status in ('open', 'finalized')) default 'open',
-  created_by   uuid not null references public.profiles(id),
-  created_at   timestamptz not null default now(),
-  finalized_at timestamptz
+  id               uuid primary key default uuid_generate_v4(),
+  class_id         uuid not null references public.classes(id),
+  status           text not null check (status in ('open', 'closed', 'finalized')) default 'open',
+  starts_at        timestamptz,
+  ends_at          timestamptz,
+  duration_minutes integer not null default 10,
+  created_by       uuid not null references public.profiles(id),
+  created_at       timestamptz not null default now(),
+  finalized_at     timestamptz
 );
 
 -- attendance
@@ -67,27 +70,34 @@ create table if not exists public.attendance (
   unique (session_id, student_id)
 );
 
--- checkin_attempts
-create table if not exists public.checkin_attempts (
-  id         uuid primary key default uuid_generate_v4(),
-  attempt_id text not null unique,
-  session_id uuid not null references public.sessions(id) on delete cascade,
-  student_id uuid not null references public.profiles(id) on delete cascade,
-  state      text not null check (state in ('evaluating', 'verified', 'flagged', 'rejected', 'error')),
-  error_code text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+-- face_templates: encrypted 512-d embeddings with consent timestamp
+create table if not exists public.face_templates (
+  id                  uuid primary key default uuid_generate_v4(),
+  user_id             uuid not null references public.profiles(id) on delete cascade unique,
+  encrypted_embedding text not null,
+  model_version       text not null,
+  consent_timestamp   timestamptz not null default now(),
+  created_at          timestamptz not null default now()
 );
 
--- suggestions
-create table if not exists public.suggestions (
-  id         uuid primary key default uuid_generate_v4(),
-  session_id uuid not null references public.sessions(id) on delete cascade,
-  student_id uuid not null references public.profiles(id),
-  confidence real not null,
-  label      text not null,
-  created_at timestamptz not null default now()
+-- checkin_attempts: continuous sweep verification records
+create table if not exists public.checkin_attempts (
+  id              uuid primary key default uuid_generate_v4(),
+  attempt_id      text not null unique,
+  session_id      uuid not null references public.sessions(id) on delete cascade,
+  student_id      uuid not null references public.profiles(id) on delete cascade,
+  state           text not null check (state in ('evaluating', 'verified', 'flagged', 'rejected', 'error')),
+  error_code      text,
+  metrics_json    text,
+  filmstrip_paths text[],
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
 );
+
+-- Ensure at most one VERIFIED record per (session, student)
+create unique index if not exists idx_unique_verified_session_student
+  on public.checkin_attempts(session_id, student_id)
+  where state = 'verified';
 
 -- audit_log
 create table if not exists public.audit_log (
@@ -146,7 +156,7 @@ alter table public.classes         enable row level security;
 alter table public.enrollments     enable row level security;
 alter table public.sessions        enable row level security;
 alter table public.attendance      enable row level security;
-alter table public.suggestions     enable row level security;
+alter table public.face_templates  enable row level security;
 alter table public.audit_log       enable row level security;
 alter table public.notifications   enable row level security;
 alter table public.checkin_attempts enable row level security;
@@ -182,6 +192,26 @@ create policy "sessions_teacher" on public.sessions
     exists (select 1 from public.classes c where c.id = class_id and c.teacher_id = auth.uid())
   );
 
+-- face_templates: users can check their own enrollment status; backend service role reads embedding
+create policy "face_templates_read_own" on public.face_templates
+  for select using (auth.uid() = user_id);
+
+create policy "face_templates_insert_own" on public.face_templates
+  for insert with check (auth.uid() = user_id);
+
+-- checkin_attempts: students read own, teacher reads class attempts
+create policy "checkin_attempts_student_read" on public.checkin_attempts
+  for select using (student_id = auth.uid());
+
+create policy "checkin_attempts_teacher_read" on public.checkin_attempts
+  for select using (
+    exists (
+      select 1 from public.sessions s
+      join public.classes c on c.id = s.class_id
+      where s.id = session_id and c.teacher_id = auth.uid()
+    )
+  );
+
 create policy "sessions_student" on public.sessions
   for select using (
     exists (
@@ -208,16 +238,6 @@ create policy "notifications_own" on public.notifications
 
 -- audit_log: teacher reads their session audits
 create policy "audit_teacher" on public.audit_log
-  for select using (
-    exists (
-      select 1 from public.sessions s
-      join public.classes c on c.id = s.class_id
-      where s.id = session_id and c.teacher_id = auth.uid()
-    )
-  );
-
--- suggestions: teacher reads for their sessions
-create policy "suggestions_teacher" on public.suggestions
   for select using (
     exists (
       select 1 from public.sessions s

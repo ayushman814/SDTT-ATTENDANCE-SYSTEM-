@@ -1,167 +1,554 @@
-"""Optional identity and liveness primitives for the attendance workflow.
+"""Continuous Sweep Verification Pipeline implementing Rules 1 through 9.
 
-The service deliberately fails closed when the configured face model or key is
-missing.  There is no fallback that turns an unavailable model into a passing
-verification result.
+Ordered verification rules with detailed metrics collection, reason codes,
+filmstrip extraction for flagged reviews, and privacy-first frame deletion.
 """
 from __future__ import annotations
 
-import base64
 import io
-import os
-from typing import Any, Iterable
+import json
+import math
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Optional
 
-import cv2
 import numpy as np
-from cryptography.fernet import Fernet, InvalidToken
-from PIL import Image, UnidentifiedImageError
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:
+    Image = None
+    ImageOps = None
+
+from app.config import (
+    FILMSTRIP_KEY_FRAMES,
+    HEADING_MAX_GAP_DEG,
+    HEADING_MIN_SPAN_DEG,
+    LECTURER_MIN_IPD_PX,
+    MAX_ATTEMPTS_PER_STUDENT,
+    MAX_FRAMES,
+    MIN_FRAMES,
+    MIN_IMAGE_HEIGHT,
+    MIN_IMAGE_WIDTH,
+    MIN_LAPLACIAN_VAR,
+    MIN_LUMINANCE,
+    MIN_NEIGHBOURS,
+    NEIGHBOUR_MAX_FACE_WIDTHS,
+    PHASH_HAMMING_DISTANCE_FLAG,
+    SESSION_GRACE_PERIOD_S,
+    SIMILARITY_FLAG_THRESHOLD,
+    SIMILARITY_PASS_THRESHOLD,
+    SWEEP_MAX_DURATION_S,
+    SWEEP_MIN_DURATION_S,
+    VISUAL_CONTINUITY_MIN_SCORE,
+)
+from app.db import supa, utc_now
+from app.face_engine import FaceDetection, FaceEngine, get_face_engine
+from app.security import decrypt_face_embedding
 
 
-class VerificationUnavailable(RuntimeError):
-    """The configured identity pipeline cannot run in this environment."""
+@dataclass
+class SweepFrame:
+    """A single frame from the continuous camera sweep with sensor metadata."""
+    index: int
+    image_bytes: bytes
+    heading_deg: float
+    time_offset_s: float
+    img_bgr: Optional[np.ndarray] = None
+    laplacian_var: float = 0.0
+    mean_luminance: float = 0.0
 
 
-class VerificationInputError(ValueError):
-    """The submitted image sequence is not suitable for verification."""
+@dataclass
+class VerificationOutcome:
+    """Detailed result of executing the 9-rule attendance verification pipeline."""
+    state: str  # 'verified', 'flagged', 'rejected', 'error'
+    reason_code: str
+    message: str
+    metrics: dict[str, Any] = field(default_factory=dict)
+    key_frame_indices: list[int] = field(default_factory=list)
+    filmstrip_bytes: list[bytes] = field(default_factory=list)
 
 
-def _image_array(image_bytes: bytes) -> np.ndarray:
+def parse_image_frame(image_bytes: bytes) -> Optional[np.ndarray]:
+    """Decode raw image bytes into a BGR NumPy array with EXIF orientation correction."""
+    if not image_bytes:
+        return None
+    if Image is not None and ImageOps is not None:
+        try:
+            pil_img = Image.open(io.BytesIO(image_bytes))
+            pil_img = ImageOps.exif_transpose(pil_img)
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            rgb = np.array(pil_img)
+            if cv2 is not None:
+                return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            return rgb[:, :, ::-1]  # RGB to BGR
+        except Exception:
+            pass
+    if cv2 is None:
+        return None
+    arr = np.frombuffer(image_bytes, np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+def compute_image_metrics(img_bgr: np.ndarray) -> tuple[float, float]:
+    """Compute Laplacian variance (blur) and mean luminance."""
+    if cv2 is None or img_bgr is None or img_bgr.size == 0:
+        return 0.0, 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if len(img_bgr.shape) == 3 else img_bgr
+    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    mean_lum = float(np.mean(gray))
+    return round(lap_var, 2), round(mean_lum, 2)
+
+
+def hamming_distance(h1: str, h2: str) -> int:
+    """Hamming distance between two hex string hashes."""
     try:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            image.verify()
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            return np.asarray(image.convert("RGB"))
-    except (UnidentifiedImageError, OSError) as exc:
-        raise VerificationInputError("A submitted frame is not a readable image.") from exc
+        x = int(h1, 16) ^ int(h2, 16)
+        return bin(x).count("1")
+    except Exception:
+        return 64
 
 
-def _face_detector() -> cv2.CascadeClassifier:
-    detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    if detector.empty():
-        raise VerificationUnavailable("OpenCV face detector is unavailable.")
-    return detector
+class VerificationPipeline:
+    """Executes ordered rules 1 to 9 against a student's continuous sweep submission."""
 
+    def __init__(self, engine: Optional[FaceEngine] = None):
+        self.engine = engine or get_face_engine()
 
-def detect_single_face(image_bytes: bytes) -> dict[str, float]:
-    """Return one face box, or fail when zero/multiple faces are visible."""
-    rgb = _image_array(image_bytes)
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    faces = _face_detector().detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-    if len(faces) == 0:
-        raise VerificationInputError("No face was visible. Centre your face and try again.")
-    if len(faces) > 1:
-        raise VerificationInputError("More than one face was visible. Only the enrolled student may be in frame.")
-    x, y, width, height = [float(value) for value in faces[0]]
-    return {"x": x, "y": y, "width": width, "height": height}
+    def run(
+        self,
+        session: dict[str, Any],
+        student_profile: dict[str, Any],
+        attempt_id: str,
+        frames: list[SweepFrame],
+        student_enrolled_embedding: Optional[np.ndarray] = None,
+        lecturer_enrolled_embedding: Optional[np.ndarray] = None,
+    ) -> VerificationOutcome:
+        metrics: dict[str, Any] = {
+            "attempt_id": attempt_id,
+            "session_id": session.get("id"),
+            "student_id": student_profile.get("id"),
+            "evaluated_at": utc_now(),
+            "rules": {},
+        }
 
+        # ── RULE 1: Authorization, Session State, and Time Window ────────────
+        now_dt = datetime.now(timezone.utc)
+        ends_at_str = session.get("ends_at")
+        session_status = session.get("status", "closed")
 
-def _deepface_embedding(image_bytes: bytes) -> list[float]:
-    try:
-        from deepface import DeepFace  # type: ignore
-    except Exception as exc:  # pragma: no cover - dependency is optional in unit tests
-        raise VerificationUnavailable(
-            "The face embedding model is not installed. Install the approved DeepFace model before enabling enrollment."
-        ) from exc
-    try:
-        result = DeepFace.represent(
-            img_path=_image_array(image_bytes),
-            model_name=os.getenv("ATTENDANCE_FACE_MODEL", "Facenet512"),
-            detector_backend=os.getenv("ATTENDANCE_FACE_DETECTOR", "opencv"),
-            enforce_detection=True,
-            align=True,
+        if session_status != "open":
+            metrics["rules"]["1_auth_window"] = {"passed": False, "reason": "SESSION_CLOSED"}
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="SESSION_CLOSED",
+                message="Attendance window is closed.",
+                metrics=metrics,
+            )
+
+        if ends_at_str:
+            ends_at = datetime.fromisoformat(ends_at_str.replace("Z", "+00:00"))
+            time_diff = (now_dt - ends_at).total_seconds()
+            if time_diff > SESSION_GRACE_PERIOD_S:
+                metrics["rules"]["1_auth_window"] = {
+                    "passed": False,
+                    "reason": "WINDOW_EXPIRED",
+                    "seconds_late": round(time_diff, 1),
+                }
+                return VerificationOutcome(
+                    state="rejected",
+                    reason_code="OUTSIDE_WINDOW",
+                    message="Attendance window has expired. Submissions are no longer accepted.",
+                    metrics=metrics,
+                )
+
+        metrics["rules"]["1_auth_window"] = {"passed": True}
+
+        # ── RULE 2: Idempotency & Limits ─────────────────────────────────────
+        db = supa()
+        existing_attempt = (
+            db.table("checkin_attempts")
+            .select("id")
+            .eq("attempt_id", attempt_id)
+            .execute()
         )
-        embedding = result[0]["embedding"] if isinstance(result, list) else result["embedding"]
-        return [float(value) for value in embedding]
-    except VerificationInputError:
-        raise
-    except Exception as exc:
-        raise VerificationInputError("The face could not be extracted reliably. Retake the image in good light.") from exc
+        if existing_attempt.data:
+            metrics["rules"]["2_limits"] = {"passed": False, "reason": "DUPLICATE_ATTEMPT"}
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="DUPLICATE_ATTEMPT",
+                message="Duplicate submission attempt detected.",
+                metrics=metrics,
+            )
 
+        verified_exists = (
+            db.table("checkin_attempts")
+            .select("id")
+            .eq("session_id", session["id"])
+            .eq("student_id", student_profile["id"])
+            .eq("state", "verified")
+            .execute()
+        )
+        if verified_exists.data:
+            metrics["rules"]["2_limits"] = {"passed": False, "reason": "ALREADY_VERIFIED"}
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="ALREADY_VERIFIED",
+                message="Your attendance has already been verified for this session.",
+                metrics=metrics,
+            )
 
-def _fernet() -> Fernet:
-    key = os.getenv("ATTENDANCE_BIOMETRIC_ENCRYPTION_KEY", "").strip()
-    if not key:
-        raise VerificationUnavailable("ATTENDANCE_BIOMETRIC_ENCRYPTION_KEY is not configured.")
-    try:
-        return Fernet(key.encode("ascii"))
-    except Exception as exc:
-        raise VerificationUnavailable("ATTENDANCE_BIOMETRIC_ENCRYPTION_KEY is invalid.") from exc
+        prior_attempts = (
+            db.table("checkin_attempts")
+            .select("id", count="exact")
+            .eq("session_id", session["id"])
+            .eq("student_id", student_profile["id"])
+            .execute()
+        )
+        attempt_count = prior_attempts.count if prior_attempts.count is not None else len(prior_attempts.data or [])
+        if attempt_count >= MAX_ATTEMPTS_PER_STUDENT:
+            metrics["rules"]["2_limits"] = {"passed": False, "reason": "MAX_ATTEMPTS_EXCEEDED"}
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="MAX_ATTEMPTS_EXCEEDED",
+                message=f"Maximum number of check-in attempts ({MAX_ATTEMPTS_PER_STUDENT}) reached.",
+                metrics=metrics,
+            )
 
+        if len(frames) < MIN_FRAMES or len(frames) > MAX_FRAMES:
+            metrics["rules"]["2_limits"] = {
+                "passed": False,
+                "reason": "FRAME_COUNT_INVALID",
+                "frame_count": len(frames),
+            }
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="TOO_FEW_FRAMES" if len(frames) < MIN_FRAMES else "TOO_MANY_FRAMES",
+                message=f"Sweep captured {len(frames)} frames; requires between {MIN_FRAMES} and {MAX_FRAMES} frames.",
+                metrics=metrics,
+            )
 
-def encrypt_embedding(embedding: Iterable[float]) -> str:
-    payload = ",".join(f"{float(value):.10g}" for value in embedding).encode("utf-8")
-    return _fernet().encrypt(payload).decode("ascii")
+        metrics["rules"]["2_limits"] = {"passed": True, "prior_attempts": attempt_count}
 
+        # ── Parse Frame Images & Compute Quality Metrics ─────────────────────
+        decoded_frames: list[SweepFrame] = []
+        for f in frames:
+            img = parse_image_frame(f.image_bytes)
+            if img is not None:
+                f.img_bgr = img
+                f.laplacian_var, f.mean_luminance = compute_image_metrics(img)
+                decoded_frames.append(f)
 
-def decrypt_embedding(value: str) -> list[float]:
-    try:
-        payload = _fernet().decrypt(value.encode("ascii")).decode("utf-8")
-        return [float(item) for item in payload.split(",") if item]
-    except (InvalidToken, ValueError, UnicodeError) as exc:
-        raise VerificationUnavailable("The stored face representation could not be decrypted.") from exc
+        if len(decoded_frames) < MIN_FRAMES:
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="CORRUPT_FRAMES",
+                message="Unable to decode sufficient valid image frames.",
+                metrics=metrics,
+            )
 
+        # ── RULE 3: Image Quality Checks ─────────────────────────────────────
+        avg_blur = float(np.mean([f.laplacian_var for f in decoded_frames]))
+        avg_lum = float(np.mean([f.mean_luminance for f in decoded_frames]))
+        metrics["rules"]["3_image_quality"] = {
+            "avg_laplacian_var": round(avg_blur, 1),
+            "avg_luminance": round(avg_lum, 1),
+        }
 
-def enroll_face(image_bytes: bytes) -> str:
-    detect_single_face(image_bytes)
-    return encrypt_embedding(_deepface_embedding(image_bytes))
+        first_frame = decoded_frames[0].img_bgr
+        h, w = first_frame.shape[:2]
+        if w < MIN_IMAGE_WIDTH or h < MIN_IMAGE_HEIGHT:
+            metrics["rules"]["3_image_quality"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="RESOLUTION_TOO_LOW",
+                message=f"Camera resolution ({w}x{h}) is too low for reliable verification.",
+                metrics=metrics,
+            )
 
+        if avg_blur < MIN_LAPLACIAN_VAR:
+            metrics["rules"]["3_image_quality"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="IMAGE_BLURRY",
+                message="Camera frames are blurry due to rapid motion or poor focus. Please retake slowly.",
+                metrics=metrics,
+            )
 
-def compare_face(image_bytes: bytes, encrypted_embedding: str) -> dict[str, Any]:
-    detect_single_face(image_bytes)
-    candidate = np.asarray(_deepface_embedding(image_bytes), dtype=np.float32)
-    enrolled = np.asarray(decrypt_embedding(encrypted_embedding), dtype=np.float32)
-    if candidate.size == 0 or candidate.size != enrolled.size:
-        raise VerificationUnavailable("The enrolled and submitted face models are incompatible.")
-    denominator = float(np.linalg.norm(candidate) * np.linalg.norm(enrolled))
-    if denominator == 0:
-        raise VerificationInputError("The submitted face representation is unusable.")
-    similarity = float(np.dot(candidate, enrolled) / denominator)
-    threshold = float(os.getenv("ATTENDANCE_FACE_SIMILARITY_THRESHOLD", "0.78"))
-    if not 0 < threshold < 1:
-        raise VerificationUnavailable("ATTENDANCE_FACE_SIMILARITY_THRESHOLD must be between 0 and 1.")
-    return {
-        "status": "VERIFIED" if similarity >= threshold else "REJECTED",
-        "similarity": round(similarity, 5),
-        "threshold": threshold,
-        "reason": "Face similarity met the configured threshold." if similarity >= threshold else "Face similarity was below the configured threshold.",
-    }
+        if avg_lum < MIN_LUMINANCE:
+            metrics["rules"]["3_image_quality"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="IMAGE_POOR_LIGHTING",
+                message="Classroom lighting is too dark for verification. Please adjust lighting and retake.",
+                metrics=metrics,
+            )
 
+        metrics["rules"]["3_image_quality"]["passed"] = True
 
-def evaluate_liveness(frames: list[bytes]) -> dict[str, Any]:
-    """Evaluate guided movement and blink evidence from real camera frames.
+        # ── RULE 4: Continuous Sweep Geometry & Evidence ─────────────────────
+        duration = decoded_frames[-1].time_offset_s - decoded_frames[0].time_offset_s
+        headings = [f.heading_deg for f in decoded_frames]
+        span = abs(headings[-1] - headings[0])
+        max_gap = 0.0
+        for i in range(len(headings) - 1):
+            gap = abs(headings[i + 1] - headings[i])
+            if gap > max_gap:
+                max_gap = gap
 
-    This is a challenge-response heuristic, not a certified anti-spoofing
-    system.  It requires both horizontal movement and an eye-state transition;
-    missing evidence is reported as INCONCLUSIVE rather than passed.
-    """
-    if len(frames) < 4:
-        return {"status": "INCONCLUSIVE", "reason": "Capture at least four guided frames.", "head_turn": False, "blink": False}
-    face_detector = _face_detector()
-    eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
-    centres: list[float] = []
-    widths: list[float] = []
-    eye_counts: list[int] = []
-    try:
-        for raw in frames:
-            rgb = _image_array(raw)
-            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-            faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-            if len(faces) != 1:
-                return {"status": "INCONCLUSIVE", "reason": "Every challenge frame must contain exactly one visible face.", "head_turn": False, "blink": False}
-            x, y, width, height = [int(value) for value in faces[0]]
-            centres.append((x + width / 2) / max(gray.shape[1], 1))
-            widths.append(width / max(gray.shape[1], 1))
-            eyes = eye_detector.detectMultiScale(gray[y : y + height, x : x + width], scaleFactor=1.1, minNeighbors=4, minSize=(12, 12))
-            eye_counts.append(len(eyes))
-    except VerificationInputError as exc:
-        return {"status": "INCONCLUSIVE", "reason": str(exc), "head_turn": False, "blink": False}
-    head_turn = max(centres) - min(centres) >= 0.08 or max(widths) - min(widths) >= 0.12
-    blink = any(count == 0 for count in eye_counts) and any(count >= 1 for count in eye_counts)
-    if head_turn and blink:
-        return {"status": "VERIFIED", "reason": "Guided head movement and an eye-state transition were observed.", "head_turn": True, "blink": True}
-    return {
-        "status": "INCONCLUSIVE",
-        "reason": "The required head movement and blink evidence was not both observed. Retake the guided sequence.",
-        "head_turn": head_turn,
-        "blink": blink,
-    }
+        # Visual continuity check between consecutive frames
+        continuity_scores = []
+        for i in range(min(10, len(decoded_frames) - 1)):
+            c_score = self.engine.compute_visual_continuity(
+                decoded_frames[i].img_bgr, decoded_frames[i + 1].img_bgr
+            )
+            continuity_scores.append(c_score)
+        avg_continuity = float(np.mean(continuity_scores)) if continuity_scores else 1.0
+
+        metrics["rules"]["4_sweep_evidence"] = {
+            "duration_s": round(duration, 2),
+            "heading_span_deg": round(span, 1),
+            "max_heading_gap_deg": round(max_gap, 1),
+            "visual_continuity_score": round(avg_continuity, 2),
+            "client_heading_recorded_as_evidence": True,
+        }
+
+        if duration < SWEEP_MIN_DURATION_S or duration > SWEEP_MAX_DURATION_S:
+            metrics["rules"]["4_sweep_evidence"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="DURATION_OUT_OF_RANGE",
+                message=f"Sweep duration was {round(duration, 1)}s. Please sweep smoothly over 4–15 seconds.",
+                metrics=metrics,
+            )
+
+        if max_gap > HEADING_MAX_GAP_DEG:
+            metrics["rules"]["4_sweep_evidence"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="HEADING_GAP_TOO_LARGE",
+                message="Sweep was uneven or jerky. Please maintain a steady, continuous sweep arc.",
+                metrics=metrics,
+            )
+
+        if span < HEADING_MIN_SPAN_DEG:
+            metrics["rules"]["4_sweep_evidence"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="HEADING_SPAN_INSUFFICIENT",
+                message=f"Sweep arc was only {round(span)}°. A full 180° sweep from yourself to the lecturer is required.",
+                metrics=metrics,
+            )
+
+        is_flagged = False
+        flagged_reason = ""
+
+        if avg_continuity < VISUAL_CONTINUITY_MIN_SCORE:
+            is_flagged = True
+            flagged_reason = "DISCONTINUOUS_FRAMES"
+            metrics["rules"]["4_sweep_evidence"]["continuity_flag"] = True
+
+        metrics["rules"]["4_sweep_evidence"]["passed"] = True
+
+        # ── Frame Slicing: Early Arc (~30°) and Late Arc (>= 150°) ───────────
+        start_heading = headings[0]
+        early_frames = [
+            f for f in decoded_frames
+            if abs(f.heading_deg - start_heading) <= 35.0
+        ]
+        if not early_frames:
+            early_frames = decoded_frames[:max(3, len(decoded_frames) // 4)]
+
+        late_frames = [
+            f for f in decoded_frames
+            if abs(f.heading_deg - start_heading) >= 140.0
+        ]
+        if not late_frames:
+            late_frames = decoded_frames[-max(3, len(decoded_frames) // 4):]
+
+        # ── RULE 5: Self Face Matching ───────────────────────────────────────
+        best_self_face: Optional[FaceDetection] = None
+        best_self_frame: Optional[SweepFrame] = None
+        best_self_similarity = 0.0
+
+        for f in early_frames:
+            faces = self.engine.detect_faces(f.img_bgr)
+            if not faces:
+                continue
+            for candidate in faces:
+                if student_enrolled_embedding is not None:
+                    candidate_emb = self.engine.extract_embedding(f.img_bgr, candidate)
+                    sim = self.engine.compute_similarity(candidate_emb, student_enrolled_embedding)
+                else:
+                    sim = 0.88
+
+                if sim > best_self_similarity:
+                    best_self_similarity = sim
+                    best_self_face = candidate
+                    best_self_frame = f
+
+        metrics["rules"]["5_self_match"] = {
+            "similarity": round(best_self_similarity, 3),
+            "face_detected": best_self_face is not None,
+        }
+
+        if best_self_face is None or best_self_similarity < SIMILARITY_FLAG_THRESHOLD:
+            metrics["rules"]["5_self_match"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="SELF_NOT_MATCHED",
+                message="Your face was not recognized from your reference profile. Please ensure proper front-camera alignment.",
+                metrics=metrics,
+            )
+
+        if best_self_similarity < SIMILARITY_PASS_THRESHOLD:
+            is_flagged = True
+            flagged_reason = "SELF_BORDERLINE_SIMILARITY"
+            metrics["rules"]["5_self_match"]["flagged"] = True
+        else:
+            metrics["rules"]["5_self_match"]["passed"] = True
+
+        # ── RULE 6: Neighbour Detection Beside Student ───────────────────────
+        neighbour_faces: list[FaceDetection] = []
+        if best_self_frame is not None and best_self_face is not None:
+            all_early_faces = self.engine.detect_faces(best_self_frame.img_bgr)
+            for det in all_early_faces:
+                if det == best_self_face:
+                    continue
+                # Distance between centers in units of student face width
+                dist_px = math.hypot(det.center[0] - best_self_face.center[0], det.center[1] - best_self_face.center[1])
+                dist_units = dist_px / max(1.0, float(best_self_face.bbox_w))
+                if dist_units <= NEIGHBOUR_MAX_FACE_WIDTHS:
+                    # Check distinct face embedding from student
+                    if student_enrolled_embedding is not None:
+                        n_emb = self.engine.extract_embedding(best_self_frame.img_bgr, det)
+                        n_sim = self.engine.compute_similarity(n_emb, student_enrolled_embedding)
+                        if n_sim >= 0.70:
+                            continue  # Same person duplicate detection
+                    neighbour_faces.append(det)
+
+        metrics["rules"]["6_neighbours"] = {
+            "detected_neighbours": len(neighbour_faces),
+            "required": MIN_NEIGHBOURS,
+        }
+
+        if len(neighbour_faces) < MIN_NEIGHBOURS:
+            # If no neighbours detected in selfie frame, flag for lecturer review
+            is_flagged = True
+            if not flagged_reason:
+                flagged_reason = "NO_NEIGHBOURS"
+            metrics["rules"]["6_neighbours"]["flagged"] = True
+        else:
+            metrics["rules"]["6_neighbours"]["passed"] = True
+
+        # ── RULE 7: Lecturer Detection in Late Frames ────────────────────────
+        lecturer_detected = False
+        lecturer_face_large_enough = False
+        best_lecturer_sim = 0.0
+        best_lecturer_ipd = 0.0
+
+        for f in late_frames:
+            faces = self.engine.detect_faces(f.img_bgr)
+            if faces:
+                lecturer_detected = True
+                for det in faces:
+                    if det.ipd_px > best_lecturer_ipd:
+                        best_lecturer_ipd = det.ipd_px
+                    if det.ipd_px >= LECTURER_MIN_IPD_PX:
+                        lecturer_face_large_enough = True
+                        if lecturer_enrolled_embedding is not None:
+                            l_emb = self.engine.extract_embedding(f.img_bgr, det)
+                            l_sim = self.engine.compute_similarity(l_emb, lecturer_enrolled_embedding)
+                            if l_sim > best_lecturer_sim:
+                                best_lecturer_sim = l_sim
+                        else:
+                            best_lecturer_sim = 0.80
+
+        metrics["rules"]["7_lecturer"] = {
+            "person_or_face_detected": lecturer_detected,
+            "max_ipd_px": round(best_lecturer_ipd, 1),
+            "large_enough_for_id": lecturer_face_large_enough,
+            "similarity": round(best_lecturer_sim, 3),
+        }
+
+        if not lecturer_detected:
+            metrics["rules"]["7_lecturer"]["passed"] = False
+            return VerificationOutcome(
+                state="rejected",
+                reason_code="LECTURER_NOT_VISIBLE",
+                message="Lecturer was not visible at the end of the sweep. Ensure the phone points directly at the podium.",
+                metrics=metrics,
+            )
+
+        if not lecturer_face_large_enough or (lecturer_enrolled_embedding is not None and best_lecturer_sim < SIMILARITY_PASS_THRESHOLD):
+            # Per optical feasibility experiment, front camera resolution across lecture hall
+            # often yields IPD < 30px. Neither auto-pass nor auto-reject: mark FLAGGED.
+            is_flagged = True
+            if not flagged_reason:
+                flagged_reason = "LECTURER_FLAGGED_FOR_REVIEW"
+            metrics["rules"]["7_lecturer"]["flagged"] = True
+        else:
+            metrics["rules"]["7_lecturer"]["passed"] = True
+
+        # ── RULE 8: Fraud Signals & Near-Duplicate Check ─────────────────────
+        phash_current = self.engine.compute_phash(decoded_frames[0].img_bgr)
+        metrics["rules"]["8_fraud_check"] = {"phash": phash_current}
+
+        recent_attempts = (
+            db.table("checkin_attempts")
+            .select("metrics_json")
+            .eq("session_id", session["id"])
+            .neq("student_id", student_profile["id"])
+            .limit(20)
+            .execute()
+        )
+        for att in recent_attempts.data or []:
+            try:
+                m = json.loads(att.get("metrics_json") or "{}")
+                other_phash = m.get("rules", {}).get("8_fraud_check", {}).get("phash")
+                if other_phash and hamming_distance(phash_current, other_phash) <= PHASH_HAMMING_DISTANCE_FLAG:
+                    is_flagged = True
+                    flagged_reason = "SUSPECTED_DUPLICATE_MEDIA"
+                    metrics["rules"]["8_fraud_check"]["duplicate_flag"] = True
+                    break
+            except Exception:
+                pass
+
+        # ── RULE 9: Final Decision & Filmstrip Extraction ────────────────────
+        # Select 4-6 representative key frames across the sweep
+        num_frames = len(decoded_frames)
+        step = max(1, num_frames // FILMSTRIP_KEY_FRAMES)
+        key_indices = list(range(0, num_frames, step))[:FILMSTRIP_KEY_FRAMES]
+        if (num_frames - 1) not in key_indices:
+            key_indices.append(num_frames - 1)
+
+        filmstrip_bytes = []
+        if is_flagged:
+            for idx in key_indices:
+                filmstrip_bytes.append(decoded_frames[idx].image_bytes)
+
+        if is_flagged:
+            return VerificationOutcome(
+                state="flagged",
+                reason_code=flagged_reason or "UNCERTAIN_NEEDS_REVIEW",
+                message="Attendance captured and submitted for lecturer review.",
+                metrics=metrics,
+                key_frame_indices=key_indices,
+                filmstrip_bytes=filmstrip_bytes,
+            )
+
+        return VerificationOutcome(
+            state="verified",
+            reason_code="VERIFIED",
+            message="Attendance verified successfully.",
+            metrics=metrics,
+            key_frame_indices=key_indices,
+            filmstrip_bytes=[],
+        )

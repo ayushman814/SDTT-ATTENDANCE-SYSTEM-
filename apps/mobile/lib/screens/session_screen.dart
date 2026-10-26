@@ -1,7 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
-import '../widgets/teacher_submission_review.dart';
 
 class SessionScreen extends StatefulWidget {
   const SessionScreen({super.key, required this.state});
@@ -12,13 +13,118 @@ class SessionScreen extends StatefulWidget {
 }
 
 class _SessionScreenState extends State<SessionScreen> {
-  String searchQuery = '';
-  final searchController = TextEditingController();
+  Timer? _countdownTimer;
+  int _selectedTab = 0; // 0: Present, 1: Needs Review (Queue), 2: Absent, 3: All
+
+  @override
+  void initState() {
+    super.initState();
+    // 1-second ticker for server-synced countdown
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
-    searchController.dispose();
+    _countdownTimer?.cancel();
     super.dispose();
+  }
+
+  String _formatRemaining(DateTime? endsAt) {
+    if (endsAt == null) return 'No limit';
+    final serverNow = widget.state.serverTimeNow;
+    final diff = endsAt.difference(serverNow);
+    if (diff.isNegative) return 'Window Closed';
+    final m = diff.inMinutes;
+    final s = diff.inSeconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _handleReviewDecision(
+    String attemptId,
+    String decision,
+  ) async {
+    final session = widget.state.activeSession;
+    if (session == null) return;
+    await widget.state.reviewDecision(
+      session.id,
+      attemptId,
+      decision,
+      note: 'Lecturer review decision via mobile app.',
+    );
+  }
+
+  Future<void> _manualRollCallToggle(AttendanceRecord record) async {
+    final nextStatus = record.isPresent ? 'absent' : 'present';
+    await widget.state.updateAttendance(
+      record.studentId,
+      nextStatus,
+      note: 'Lecturer manual roll-call override.',
+    );
+  }
+
+  void _exportExcel(BuildContext context, AttendanceSession session) {
+    final exportUrl = widget.state.api.sessionExcelExportUrl(session.id);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.table_view_rounded, color: AppColors.emerald, size: 26),
+            SizedBox(width: 10),
+            Text('Excel Export (.xlsx)', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'A professionally formatted spreadsheet with colored KPI headers, status badges (Present/Absent/Flagged), and audit notes is ready.',
+              style: TextStyle(fontSize: 13, color: AppColors.slate, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+              ),
+              child: SelectableText(
+                exportUrl,
+                style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: AppColors.primary),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.emerald,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Spreadsheet analysis exported successfully!'),
+                  backgroundColor: AppColors.emerald,
+                ),
+              );
+            },
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: const Text('Export Excel'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -37,15 +143,12 @@ class _SessionScreenState extends State<SessionScreen> {
       );
     }
 
-    final total = session.records.length;
-    final presentCount = session.records.where((r) => r.isPresent).length;
-    final absentCount = session.records.where((r) => r.isAbsent).length;
-    final pendingCount = session.records.where((r) => r.isPending).length;
+    final serverNow = widget.state.serverTimeNow;
+    final isExpired = session.endsAt != null && serverNow.isAfter(session.endsAt!);
+    final isSessionClosed = session.isClosed || isExpired;
 
-    final filteredRecords = session.records.where((r) {
-      if (searchQuery.trim().isEmpty) return true;
-      return r.studentName.toLowerCase().contains(searchQuery.toLowerCase());
-    }).toList();
+    final presentList = session.records.where((r) => r.isPresent).toList();
+    final absentList = session.records.where((r) => r.isAbsent).toList();
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -55,569 +158,456 @@ class _SessionScreenState extends State<SessionScreen> {
           children: [
             Text(
               session.className,
-              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
             ),
             Text(
-              'Session #${session.id} • ${session.status.toUpperCase()}',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.slate,
-              ),
+              '${session.classCode} • Session #${session.id.substring(0, 8)}',
+              style: const TextStyle(fontSize: 12, color: AppColors.slate),
             ),
           ],
         ),
         actions: [
           IconButton(
-            tooltip: 'Refresh roster',
-            onPressed: () async {
-              await widget.state.openSession(session.id);
-              if (mounted) setState(() {});
-            },
+            tooltip: 'Export Professional Excel (.xlsx)',
+            onPressed: () => _exportExcel(context, session),
+            icon: const Icon(Icons.table_chart_rounded, color: AppColors.emerald),
+          ),
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: () => widget.state.openSession(session.id),
             icon: const Icon(Icons.refresh_rounded),
           ),
-          const SizedBox(width: 8),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          await widget.state.openSession(session.id);
-        },
-        color: AppColors.primary,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
-          children: [
-            // Session Overview Card
-            FadeSlideIn(
-              offsetY: 16,
-              child: AppCard(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 90),
+        children: [
+          // ── Headline Card ────────────────────────────────────────────────
+          AppCard(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: AppColors.primary.withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              child: const Icon(
-                                Icons.fact_check_rounded,
-                                color: AppColors.primary,
-                                size: 24,
-                              ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: (isSessionClosed ? AppColors.slate : AppColors.emerald).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isSessionClosed ? Icons.lock_clock_rounded : Icons.timer_rounded,
+                            size: 15,
+                            color: isSessionClosed ? AppColors.slate : AppColors.emerald,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            isSessionClosed ? 'WINDOW CLOSED' : 'LIVE SESSION',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: isSessionClosed ? AppColors.slate : AppColors.emerald,
                             ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Live Roll Call',
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                ),
-                                Text(
-                                  '$total Enrolled Students',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.muted,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        StatusChip(status: session.status),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
-
-                    const SizedBox(height: 18),
-
-                    // Multi-color breakdown bar
-                    AttendanceBreakdownBar(
-                      present: presentCount,
-                      absent: absentCount,
-                      pending: pendingCount,
-                      height: 10,
-                    ),
-
-                    const SizedBox(height: 14),
-
-                    // Metric pills row
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _StatusCounter(
-                          label: 'Present',
-                          count: presentCount,
-                          color: AppColors.emerald,
-                        ),
-                        _StatusCounter(
-                          label: 'Absent',
-                          count: absentCount,
-                          color: AppColors.rose,
-                        ),
-                        _StatusCounter(
-                          label: 'Pending',
-                          count: pendingCount,
-                          color: AppColors.amber,
-                        ),
-                      ],
+                    // Server-synced Countdown
+                    Text(
+                      _formatRemaining(session.endsAt),
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                        color: isSessionClosed ? AppColors.rose : AppColors.ink,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
                     ),
                   ],
                 ),
-              ),
-            ),
+                const SizedBox(height: 18),
 
-            const SizedBox(height: 16),
-
-            const SizedBox(height: 24),
-
-            TeacherSubmissionReview(state: widget.state, sessionId: session.id),
-
-            const SizedBox(height: 8),
-
-            // Roster Header & Search
-            FadeSlideIn(
-              delay: const Duration(milliseconds: 120),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('Class Roster', style: Theme.of(context).textTheme.titleLarge),
-                  Text(
-                    '$pendingCount pending',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: pendingCount > 0 ? AppColors.amber : AppColors.emerald,
+                // Headline Present Verified Count
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(
+                      '${session.verifiedCount}',
+                      style: const TextStyle(
+                        fontSize: 44,
+                        fontWeight: FontWeight.w900,
+                        color: AppColors.ink,
+                        letterSpacing: -1,
+                      ),
                     ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '/ ${session.records.length} Present',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.slate,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // Status Breakdown Pills
+                Row(
+                  children: [
+                    _MetricChip(label: 'Verified', count: session.verifiedCount, color: AppColors.emerald),
+                    const SizedBox(width: 8),
+                    _MetricChip(label: 'Needs Review', count: widget.state.reviewItems.length, color: AppColors.amber),
+                    const SizedBox(width: 8),
+                    _MetricChip(label: 'Absent', count: absentList.length, color: AppColors.rose),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                OutlinedButton.icon(
+                  onPressed: () => _exportExcel(context, session),
+                  icon: const Icon(Icons.file_download_outlined, size: 18, color: AppColors.emerald),
+                  label: const Text(
+                    'Export Colored Excel Analysis (.xlsx)',
+                    style: TextStyle(color: AppColors.ink, fontWeight: FontWeight.w700, fontSize: 13),
                   ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
-            // Search Bar
-            FadeSlideIn(
-              delay: const Duration(milliseconds: 140),
-              child: TextField(
-                controller: searchController,
-                onChanged: (val) => setState(() => searchQuery = val),
-                decoration: InputDecoration(
-                  hintText: 'Search student name...',
-                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                  suffixIcon: searchQuery.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear_rounded, size: 18),
-                          onPressed: () {
-                            searchController.clear();
-                            setState(() => searchQuery = '');
-                          },
-                        )
-                      : null,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            if (filteredRecords.isEmpty)
-              const FadeSlideIn(
-                delay: Duration(milliseconds: 160),
-                child: EmptyState(
-                  icon: Icons.person_search_rounded,
-                  title: 'No matching students',
-                  message: 'Try checking your search query spelling.',
-                ),
-              ),
-
-            // Student Roster List with Instant Tap Buttons
-            ...filteredRecords.asMap().entries.map((entry) {
-              final index = entry.key;
-              final record = entry.value;
-
-              return FadeSlideIn(
-                delay: Duration(milliseconds: 160 + index * 30),
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: AppCard(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 18,
-                              backgroundColor: record.isPresent
-                                  ? AppColors.emeraldBg
-                                  : record.isAbsent
-                                      ? AppColors.roseBg
-                                      : AppColors.cardSubtle,
-                              child: Text(
-                                record.studentName.isNotEmpty
-                                    ? record.studentName.substring(0, 1).toUpperCase()
-                                    : '?',
-                                style: TextStyle(
-                                  color: record.isPresent
-                                      ? AppColors.emerald
-                                      : record.isAbsent
-                                          ? AppColors.rose
-                                          : AppColors.slate,
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                record.studentName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 15,
-                                  color: AppColors.ink,
-                                ),
-                              ),
-                            ),
-                            StatusChip(status: record.status, compact: true),
-                          ],
-                        ),
-                        if (session.status == 'open' || session.status == 'closed') ...[
-                          const SizedBox(height: 10),
-                          const Divider(height: 1, color: AppColors.border),
-                          const SizedBox(height: 8),
-                          // Instant Action Segmented Row
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _RosterActionButton(
-                                  label: 'Present',
-                                  icon: Icons.check_rounded,
-                                  isActive: record.isPresent,
-                                  activeColor: AppColors.emerald,
-                                  onTap: () async {
-                                    await widget.state.setAttendance(
-                                        record.studentId, 'present');
-                                    if (mounted) setState(() {});
-                                  },
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _RosterActionButton(
-                                  label: 'Absent',
-                                  icon: Icons.close_rounded,
-                                  isActive: record.isAbsent,
-                                  activeColor: AppColors.rose,
-                                  onTap: () async {
-                                    await widget.state.setAttendance(
-                                        record.studentId, 'absent');
-                                    if (mounted) setState(() {});
-                                  },
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _RosterActionButton(
-                                  label: 'Pending',
-                                  icon: Icons.schedule_rounded,
-                                  isActive: record.isPending,
-                                  activeColor: AppColors.amber,
-                                  onTap: () async {
-                                    await widget.state.setAttendance(
-                                        record.studentId, 'pending');
-                                    if (mounted) setState(() {});
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.emeraldBorder),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   ),
                 ),
-              );
-            }),
-          ],
-        ),
-      ),
-      bottomSheet: session.status != 'finalized'
-          ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ── Review Queue Alert (if flagged attempts exist) ────────────────
+          if (widget.state.reviewItems.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white,
-                border: const Border(top: BorderSide(color: AppColors.border)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 16,
-                    offset: const Offset(0, -4),
-                  ),
-                ],
+                color: AppColors.amber.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.amber.withValues(alpha: 0.3)),
               ),
-              child: SafeArea(
-                child: AnimatedPressable(
-                  onTap: widget.state.busy ? null : session.status == 'scheduled' ? _openEarly : session.isOpen ? _closeWindow : _finalize,
-                  child: Container(
-                    height: 52,
-                    decoration: BoxDecoration(
-                      gradient: pendingCount == 0
-                          ? AppColors.primaryGradient
-                          : const LinearGradient(
-                              colors: [Color(0xFFEA580C), Color(0xFFC2410C)],
-                            ),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: (pendingCount == 0
-                                  ? AppColors.primary
-                                  : const Color(0xFFEA580C))
-                              .withValues(alpha: 0.3),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: AppColors.amber, size: 28),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${widget.state.reviewItems.length} Student Check-ins Need Review',
+                          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: AppColors.ink),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'Front camera sweep flagged for optical verification. Inspect key frames below.',
+                          style: TextStyle(fontSize: 12, color: AppColors.slate),
                         ),
                       ],
                     ),
-                    child: Center(
-                      child: widget.state.busy
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor:
-                                    AlwaysStoppedAnimation<Color>(Colors.white),
-                              ),
-                            )
-                          : Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(Icons.lock_outline_rounded,
-                                    color: Colors.white, size: 20),
-                                const SizedBox(width: 8),
-                                Text(
-                                  session.status == 'scheduled'
-                                      ? 'Open Attendance Window Now'
-                                      : session.isOpen
-                                      ? 'Close Submission Window'
-                                      : pendingCount == 0
-                                          ? 'Finalize Attendance Session'
-                                          : 'Finalize & Mark $pendingCount Absent',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                              ],
-                            ),
-                    ),
                   ),
-                ),
+                ],
               ),
-            )
-          : null,
-    );
-  }
-
-
-
-  Future<void> _openEarly() async {
-    final session = widget.state.activeSession;
-    if (session == null) return;
-    try {
-      await widget.state.openAttendanceWindow(session.id);
-      if (mounted) setState(() {});
-    } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
-    }
-  }
-
-  Future<void> _closeWindow() async {
-    final session = widget.state.activeSession;
-    if (session == null) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Close submission window?'),
-        content: const Text('Students will no longer be able to submit images. You can still review submissions and correct the roster before finalizing.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep open')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Close window')),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await widget.state.closeAttendanceWindow(session.id);
-      if (mounted) setState(() {});
-    } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
-    }
-  }
-
-  Future<void> _finalize() async {
-    final session = widget.state.activeSession;
-    final pending =
-        session?.records.where((r) => r.isPending).length ?? 0;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: const Text('Finalize Attendance Session?'),
-        content: Text(
-          pending > 0
-              ? 'This will close the session and permanently mark $pending pending student(s) as absent. Students will receive private in-app notifications.'
-              : 'All students are accounted for. This will close the session and notify students.',
-          style: const TextStyle(fontSize: 14, color: AppColors.slate, height: 1.45),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Keep Reviewing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(
-              backgroundColor:
-                  pending > 0 ? const Color(0xFFEA580C) : AppColors.primary,
             ),
-            child: const Text('Confirm Finalize'),
+            const SizedBox(height: 16),
+          ],
+
+          // ── Tabs: Review Queue | Present | Absent | All ───────────────────
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _TabButton(
+                  label: 'Review Queue (${widget.state.reviewItems.length})',
+                  active: _selectedTab == 1,
+                  onTap: () => setState(() => _selectedTab = 1),
+                ),
+                const SizedBox(width: 8),
+                _TabButton(
+                  label: 'Present (${presentList.length})',
+                  active: _selectedTab == 0,
+                  onTap: () => setState(() => _selectedTab = 0),
+                ),
+                const SizedBox(width: 8),
+                _TabButton(
+                  label: 'Absent (${absentList.length})',
+                  active: _selectedTab == 2,
+                  onTap: () => setState(() => _selectedTab = 2),
+                ),
+                const SizedBox(width: 8),
+                _TabButton(
+                  label: 'All (${session.records.length})',
+                  active: _selectedTab == 3,
+                  onTap: () => setState(() => _selectedTab = 3),
+                ),
+              ],
+            ),
           ),
+          const SizedBox(height: 16),
+
+          // ── Tab Content ───────────────────────────────────────────────────
+          if (_selectedTab == 1) ...[
+            // Review Queue Tab
+            if (widget.state.reviewItems.isEmpty)
+              const EmptyState(
+                icon: Icons.check_circle_outline_rounded,
+                title: 'Review Queue Clear',
+                message: 'No student attempts currently require manual inspection.',
+              )
+            else
+              ...widget.state.reviewItems.map((item) => _ReviewItemCard(
+                    item: item,
+                    onAccept: () => _handleReviewDecision(item.attemptId, 'accept'),
+                    onReject: () => _handleReviewDecision(item.attemptId, 'reject'),
+                  )),
+          ] else ...[
+            // Roster Records List (Present, Absent, or All)
+            ...(_selectedTab == 0
+                    ? presentList
+                    : (_selectedTab == 2 ? absentList : session.records))
+                .map((record) => _RosterRow(
+                      record: record,
+                      onToggle: () => _manualRollCallToggle(record),
+                    )),
+          ],
+
+          const SizedBox(height: 24),
+
+          // ── Actions: Finalize / Export ────────────────────────────────────
+          if (!session.isFinalized)
+            ElevatedButton.icon(
+              onPressed: () => widget.state.finalizeSession(),
+              icon: const Icon(Icons.done_all_rounded, size: 18),
+              label: const Text('Confirm and Finalize Session'),
+            ),
         ],
       ),
     );
-
-    if (confirm != true) return;
-    final ok = await widget.state.finalizeActive();
-    if (mounted && ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: AppColors.emerald,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          content: const Row(
-            children: [
-              Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-              SizedBox(width: 10),
-              Text('Attendance session finalized successfully.'),
-            ],
-          ),
-        ),
-      );
-      setState(() {});
-    }
   }
 }
 
-class _StatusCounter extends StatelessWidget {
-  const _StatusCounter({
-    required this.label,
-    required this.count,
-    required this.color,
-  });
-
+class _MetricChip extends StatelessWidget {
+  const _MetricChip({required this.label, required this.count, required this.color});
   final String label;
   final int count;
   final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          '$count',
-          style: TextStyle(
-            fontWeight: FontWeight.w900,
-            fontSize: 15,
-            color: color,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Text(
+            '$label: $count',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color),
           ),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: AppColors.slate,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
-class _RosterActionButton extends StatelessWidget {
-  const _RosterActionButton({
-    required this.label,
-    required this.icon,
-    required this.isActive,
-    required this.activeColor,
-    required this.onTap,
-  });
-
+class _TabButton extends StatelessWidget {
+  const _TabButton({required this.label, required this.active, required this.onTap});
   final String label;
-  final IconData icon;
-  final bool isActive;
-  final Color activeColor;
+  final bool active;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedPressable(
+    return InkWell(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.symmetric(vertical: 8),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive
-              ? activeColor.withValues(alpha: 0.12)
-              : AppColors.cardSubtle,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isActive ? activeColor : AppColors.border,
-            width: isActive ? 1.4 : 1.0,
+          color: active ? AppColors.primary : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: active ? AppColors.primary : AppColors.line),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+            color: active ? Colors.white : AppColors.ink,
           ),
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              size: 14,
-              color: isActive ? activeColor : AppColors.slate,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: isActive ? FontWeight.w900 : FontWeight.w600,
-                color: isActive ? activeColor : AppColors.slate,
+      ),
+    );
+  }
+}
+
+class _ReviewItemCard extends StatelessWidget {
+  const _ReviewItemCard({
+    required this.item,
+    required this.onAccept,
+    required this.onReject,
+  });
+
+  final CheckinReviewItem item;
+  final VoidCallback onAccept;
+  final VoidCallback onReject;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                item.studentName,
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppColors.amber.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  item.reasonCode,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.amber),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(item.studentEmail, style: const TextStyle(fontSize: 12, color: AppColors.slate)),
+          const SizedBox(height: 12),
+
+          // Filmstrip Carousel of Key Frames
+          if (item.filmstripUrls.isNotEmpty)
+            SizedBox(
+              height: 90,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: item.filmstripUrls.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (ctx, idx) => ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.network(
+                    item.filmstripUrls[idx],
+                    width: 90,
+                    height: 90,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 90,
+                      height: 90,
+                      color: AppColors.line,
+                      child: Center(
+                        child: Text('Frame $idx', style: const TextStyle(fontSize: 11, color: AppColors.slate)),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
-          ],
-        ),
+
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onReject,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.rose,
+                    side: const BorderSide(color: AppColors.rose),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  child: const Text('Mark Absent'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: onAccept,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.emerald,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  child: const Text('Accept Present'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RosterRow extends StatelessWidget {
+  const _RosterRow({required this.record, required this.onToggle});
+  final AttendanceRecord record;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = record.isPresent
+        ? AppColors.emerald
+        : (record.isAbsent ? AppColors.rose : AppColors.amber);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  record.studentName,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: AppColors.ink),
+                ),
+                if (record.note.isNotEmpty)
+                  Text(record.note, style: const TextStyle(fontSize: 11.5, color: AppColors.slate)),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Toggle present/absent',
+            onPressed: onToggle,
+            icon: Icon(
+              record.isPresent ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+              color: color,
+              size: 22,
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,23 +1,15 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
 import '../panorama/panorama_home_screen.dart';
-import '../widgets/student_submission_card.dart';
 import 'notifications_screen.dart';
 import 'session_screen.dart';
-
-void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(
-    MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: buildTheme(),
-      home: HomeScreen(state: AppState()),
-    ),
-  );
-}
+import 'sweep_capture_screen.dart';
+import 'controller_screen.dart';
+import 'live_face_verification_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.state});
@@ -80,9 +72,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   tab == 1
                       ? 'Notifications'
-                      : isTeacher
-                          ? 'Teacher Desk'
-                          : 'Attendance',
+                      : widget.state.isController
+                          ? 'Academic Controller'
+                          : isTeacher
+                              ? 'Lecturer Desk'
+                              : 'Attendance',
                   style: const TextStyle(
                     fontWeight: FontWeight.w900,
                     fontSize: 18,
@@ -91,7 +85,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 Text(
                   user != null
-                      ? '${user.name} • ${isTeacher ? "Instructor" : "Student"}'
+                      ? '${user.name} • ${widget.state.isController ? "Controller" : isTeacher ? "Lecturer" : "Student"}'
                       : 'Signed in',
                   style: const TextStyle(
                     fontSize: 12,
@@ -191,20 +185,27 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: tab == 1
           ? NotificationsScreen(state: widget.state)
-          : isTeacher
-              ? TeacherHome(state: widget.state)
-              : StudentHome(state: widget.state),
+          : widget.state.isController
+              ? ControllerScreen(state: widget.state)
+              : isTeacher
+                  ? TeacherHome(state: widget.state)
+                  : StudentHome(state: widget.state),
       bottomNavigationBar: NavigationBar(
         selectedIndex: tab,
         onDestinationSelected: (index) => setState(() => tab = index),
         destinations: [
           NavigationDestination(
-            icon: Icon(isTeacher
-                ? Icons.dashboard_outlined
-                : Icons.insights_outlined),
-            selectedIcon: Icon(
-                isTeacher ? Icons.dashboard_rounded : Icons.insights_rounded),
-            label: isTeacher ? 'Classes' : 'Overview',
+            icon: Icon(widget.state.isController
+                ? Icons.admin_panel_settings_outlined
+                : isTeacher
+                    ? Icons.dashboard_outlined
+                    : Icons.insights_outlined),
+            selectedIcon: Icon(widget.state.isController
+                ? Icons.admin_panel_settings_rounded
+                : isTeacher
+                    ? Icons.dashboard_rounded
+                    : Icons.insights_rounded),
+            label: widget.state.isController ? 'Management' : isTeacher ? 'Classes' : 'Overview',
           ),
           NavigationDestination(
             icon: Badge(
@@ -287,83 +288,13 @@ class TeacherHome extends StatelessWidget {
   }
 
   Future<void> _start(BuildContext context, Classroom classroom) async {
-    final titleController = TextEditingController(text: '${classroom.code} attendance');
-    final leftController = TextEditingController(text: '40');
-    final topController = TextEditingController(text: '0');
-    final widthController = TextEditingController(text: '25');
-    final heightController = TextEditingController(text: '100');
-    final peopleController = TextEditingController(text: '2');
-    var opensAt = DateTime.now();
-    var durationMinutes = 10;
-    final configured = await showDialog<bool>(
+    final chosenDuration = await showDialog<int>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: const Text('Schedule attendance'),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Session title')),
-              const SizedBox(height: 12),
-              Text('Opens ${DateFormat('MMM d, yyyy · h:mm a').format(opensAt)}'),
-              TextButton.icon(
-                icon: const Icon(Icons.schedule),
-                label: const Text('Choose opening date and time'),
-                onPressed: () async {
-                  final day = await showDatePicker(context: dialogContext, initialDate: opensAt, firstDate: DateTime.now().subtract(const Duration(days: 1)), lastDate: DateTime.now().add(const Duration(days: 365)));
-                  if (day == null || !dialogContext.mounted) return;
-                  final time = await showTimePicker(context: dialogContext, initialTime: TimeOfDay.fromDateTime(opensAt));
-                  if (time == null) return;
-                  setDialogState(() => opensAt = DateTime(day.year, day.month, day.day, time.hour, time.minute));
-                },
-              ),
-              const SizedBox(height: 8),
-              const Text('Attendance window'),
-              Wrap(
-                spacing: 6,
-                children: [
-                  for (final minutes in [10, 30, 60, 120])
-                    ChoiceChip(
-                      label: Text('$minutes min'),
-                      selected: durationMinutes == minutes,
-                      onSelected: (_) => setDialogState(() => durationMinutes = minutes),
-                    ),
-                ],
-              ),
-              ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: const Text('Scene verification settings'),
-                subtitle: const Text('Adjust the stage region to match your classroom panorama.'),
-                children: [
-                  Row(children: [Expanded(child: TextField(controller: leftController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Left %'))), const SizedBox(width: 8), Expanded(child: TextField(controller: topController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Top %')))]),
-                  Row(children: [Expanded(child: TextField(controller: widthController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Width %'))), const SizedBox(width: 8), Expanded(child: TextField(controller: heightController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Height %')))]),
-                  TextField(controller: peopleController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Minimum nearby people (1–30)')),
-                  const Text('The detector reports scene evidence only; it does not identify the lecturer or prove that the region is a stage.', style: TextStyle(fontSize: 12)),
-                ],
-              ),
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Create session')),
-          ],
-        ),
-      ),
+      builder: (ctx) => _DurationPresetDialog(classroom: classroom),
     );
-    if (configured != true) { titleController.dispose(); leftController.dispose(); topController.dispose(); widthController.dispose(); heightController.dispose(); peopleController.dispose(); return; }
-    final title = titleController.text.trim().isEmpty ? '${classroom.code} attendance' : titleController.text.trim();
-    titleController.dispose();
-    final left = double.tryParse(leftController.text);
-    final top = double.tryParse(topController.text);
-    final width = double.tryParse(widthController.text);
-    final height = double.tryParse(heightController.text);
-    final people = int.tryParse(peopleController.text);
-    leftController.dispose(); topController.dispose(); widthController.dispose(); heightController.dispose(); peopleController.dispose();
-    if (!context.mounted) return;
-    if (left == null || top == null || width == null || height == null || people == null || left < 0 || top < 0 || width <= 0 || height <= 0 || left + width > 100 || top + height > 100 || people < 1 || people > 30) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid stage rectangle within 0–100% and a nearby-people count from 1 to 30.')));
-      return;
-    }
-    final ok = await state.startSession(classroom.id, title: title, opensAt: opensAt, duration: Duration(minutes: durationMinutes), stageRegion: {'x': left / 100, 'y': top / 100, 'width': width / 100, 'height': height / 100}, minimumPeopleVisible: people);
+    if (chosenDuration == null) return;
+
+    final ok = await state.startSession(classroom.id, durationMinutes: chosenDuration);
     if (!context.mounted) return;
     if (ok) {
       Navigator.of(context).push(
@@ -469,7 +400,7 @@ class TeacherHome extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          'Launch a session, inspect synthetic suggestions, and finalize with one tap.',
+                          'Launch a timed session, observe live verified counts, and inspect flagged attempts in the review queue.',
                           style: TextStyle(
                             fontSize: 12.5,
                             color: Colors.white70,
@@ -681,9 +612,7 @@ class TeacherHome extends StatelessWidget {
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              s.createdAt != null
-                                  ? DateFormat.yMMMd().add_jm().format(s.createdAt!.toLocal())
-                                  : 'Session #${s.id}',
+                              DateFormat.yMMMd().add_jm().format(s.createdAt.toLocal()),
                               style: const TextStyle(
                                 fontSize: 12,
                                 color: AppColors.muted,
@@ -722,6 +651,21 @@ class StudentHome extends StatefulWidget {
 
 class _StudentHomeState extends State<StudentHome> {
   String filter = 'all'; // 'all', 'present', 'absent', 'pending'
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -738,6 +682,8 @@ class _StudentHomeState extends State<StudentHome> {
       if (filter == 'pending') return e.isPending;
       return true;
     }).toList();
+
+    final openSessions = state.sessions.where((s) => s.isOpen).toList();
 
     return RefreshIndicator(
       onRefresh: state.retryHome,
@@ -768,8 +714,6 @@ class _StudentHomeState extends State<StudentHome> {
                         color: AppColors.muted,
                       ),
                     ),
-                    if (state.user?.registrationId != null)
-                      Text('Student ID: ${state.user!.registrationId}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
                   ],
                 ),
               ],
@@ -778,7 +722,198 @@ class _StudentHomeState extends State<StudentHome> {
 
           const SizedBox(height: 18),
 
-          StudentSubmissionCard(state: state),
+          // Registration Locked Status Banner
+          if (state.enrollmentStatus?.registrationLocked == true)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.emerald.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.emerald.withValues(alpha: 0.25)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.lock_outline_rounded, color: AppColors.emerald, size: 20),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Biometric Registration Complete & Locked',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Your facial embedding is securely stored. Registration is closed. Contact Controller if reset needed.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.slate,
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Active Session Card (If Any Open)
+          if (openSessions.isNotEmpty) ...[
+            ...openSessions.map((session) {
+              final endsAt = session.endsAt;
+              final remaining = endsAt != null ? endsAt.difference(state.serverTimeNow) : Duration.zero;
+              final isExpired = remaining.isNegative;
+              final minutes = remaining.inMinutes;
+              final seconds = (remaining.inSeconds % 60).clamp(0, 59);
+              final timerStr = isExpired
+                  ? 'Window Closed'
+                  : '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+
+              return FadeSlideIn(
+                delay: const Duration(milliseconds: 30),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 18),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isExpired
+                          ? AppColors.slate.withValues(alpha: 0.3)
+                          : AppColors.primary.withValues(alpha: 0.3),
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isExpired ? AppColors.roseBg : AppColors.emeraldBg,
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: isExpired ? AppColors.roseBorder : AppColors.emeraldBorder,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _PulsingDot(color: isExpired ? AppColors.rose : AppColors.emerald),
+                                const SizedBox(width: 5),
+                                Text(
+                                  isExpired ? 'WINDOW CLOSED' : 'ACTIVE SESSION',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: isExpired ? AppColors.rose : AppColors.emerald,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            timerStr,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w900,
+                              fontFamily: 'monospace',
+                              color: isExpired ? AppColors.rose : AppColors.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        session.className.isNotEmpty ? session.className : 'Classroom Session',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Continuous sweep attendance window. Hold phone at arm\'s length and sweep across neighbors to the lecturer.',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: AppColors.slate,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: isExpired
+                              ? null
+                              : () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => LiveFaceVerificationScreen(
+                                        state: state,
+                                        session: session,
+                                      ),
+                                    ),
+                                  );
+                                },
+                          icon: const Icon(Icons.face_retouching_natural_rounded, size: 20),
+                          label: Text(
+                            isExpired ? 'Window Closed' : 'Mark Attendance (Live Face & Room Scan)',
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            backgroundColor: isExpired ? AppColors.slate : AppColors.primary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Center(
+                        child: TextButton.icon(
+                          onPressed: isExpired
+                              ? null
+                              : () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => SweepCaptureScreen(
+                                        state: state,
+                                        session: session,
+                                      ),
+                                    ),
+                                  );
+                                },
+                          icon: const Icon(Icons.cameraswitch_outlined, size: 16),
+                          label: const Text(
+                            'Alternative: 360° Sweep Capture',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ],
 
           // Hero Attendance Card with Circular Gauge & Counters
           FadeSlideIn(
@@ -935,6 +1070,12 @@ class _StudentHomeState extends State<StudentHome> {
                       selected: filter == 'absent',
                       onTap: () => setState(() => filter = 'absent'),
                     ),
+                    const SizedBox(width: 6),
+                    _FilterChip(
+                      label: 'Pending',
+                      selected: filter == 'pending',
+                      onTap: () => setState(() => filter = 'pending'),
+                    ),
                   ],
                 ),
               ],
@@ -1005,8 +1146,8 @@ class _StudentHomeState extends State<StudentHome> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              record.className?.isNotEmpty == true
-                                  ? record.className!
+                              record.className.isNotEmpty
+                                  ? record.className
                                   : 'Class Session',
                               style: Theme.of(context).textTheme.titleMedium,
                             ),
@@ -1126,6 +1267,104 @@ class _FilterChip extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _DurationPresetDialog extends StatefulWidget {
+  const _DurationPresetDialog({required this.classroom});
+  final Classroom classroom;
+
+  @override
+  State<_DurationPresetDialog> createState() => _DurationPresetDialogState();
+}
+
+class _DurationPresetDialogState extends State<_DurationPresetDialog> {
+  int selectedMinutes = 10;
+  bool isCustom = false;
+  final TextEditingController customController = TextEditingController(text: '20');
+
+  @override
+  void dispose() {
+    customController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text('Start Session: ${widget.classroom.name}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Select attendance window duration. Server clock strictly enforces deadline.',
+            style: TextStyle(fontSize: 13, color: AppColors.slate),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [5, 10, 15].map((mins) {
+              final isSel = !isCustom && selectedMinutes == mins;
+              return ChoiceChip(
+                label: Text('$mins mins'),
+                selected: isSel,
+                onSelected: (val) {
+                  if (val) {
+                    setState(() {
+                      selectedMinutes = mins;
+                      isCustom = false;
+                    });
+                  }
+                },
+              );
+            }).toList()
+              ..add(
+                ChoiceChip(
+                  label: const Text('Custom'),
+                  selected: isCustom,
+                  onSelected: (val) {
+                    setState(() {
+                      isCustom = true;
+                    });
+                  },
+                ),
+              ),
+          ),
+          if (isCustom) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: customController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Duration (minutes, max 60)',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            int duration = selectedMinutes;
+            if (isCustom) {
+              final parsed = int.tryParse(customController.text.trim()) ?? 10;
+              duration = parsed.clamp(1, 60);
+            }
+            Navigator.of(context).pop(duration);
+          },
+          child: const Text('Launch Session'),
+        ),
+      ],
     );
   }
 }

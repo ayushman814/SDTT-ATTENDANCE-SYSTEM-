@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/models.dart';
@@ -49,6 +49,11 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
   String attemptId = '';
 
   late AnimationController _arcController;
+  CameraController? _cameraController;
+  List<CameraDescription> _cameras = [];
+  int _selectedCameraIndex = 0;
+  bool _isCameraInitialized = false;
+  bool _cameraPermissionError = false;
 
   @override
   void initState() {
@@ -59,12 +64,16 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
     );
     // Lock orientation to portrait during capture
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    _initCamera();
   }
 
   @override
   void dispose() {
     sweepTimer?.cancel();
     _arcController.dispose();
+    _cameraController?.dispose();
+    _cameraController = null;
+    _isCameraInitialized = false;
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
@@ -72,6 +81,72 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
       DeviceOrientation.landscapeRight,
     ]);
     super.dispose();
+  }
+
+  Future<void> _initCamera() async {
+    try {
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) {
+        if (mounted) setState(() => _cameraPermissionError = true);
+        return;
+      }
+      int frontIndex = _cameras.indexWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
+      );
+      _selectedCameraIndex = frontIndex != -1 ? frontIndex : 0;
+      await _setupCameraController(_cameras[_selectedCameraIndex]);
+    } catch (_) {
+      if (mounted) setState(() => _cameraPermissionError = true);
+    }
+  }
+
+  Future<void> _setupCameraController(CameraDescription camera) async {
+    final prev = _cameraController;
+    if (prev != null) {
+      _cameraController = null;
+      await prev.dispose();
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+
+    final controller = CameraController(
+      camera,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+
+    try {
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraController = controller;
+        _isCameraInitialized = true;
+        _cameraPermissionError = false;
+      });
+      debugPrint('Sweep camera initialized: $camera');
+    } catch (e) {
+      debugPrint('Controller init error: $e');
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = false;
+          _cameraPermissionError = true;
+        });
+      }
+    }
+  }
+
+  /// Captures a real frame from the device camera. Returns JPEG bytes or null
+  /// when no camera is available; callers must treat null as "no evidence".
+  Future<List<int>?> _captureRealFrame() async {
+    try {
+      if (!_isCameraInitialized || _cameraController == null) return null;
+      final f = await _cameraController!.takePicture();
+      return await f.readAsBytes();
+    } catch (_) {
+      return null;
+    }
   }
 
   void _giveFeedbackCue(String type) {
@@ -95,12 +170,92 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
   }
 
   Future<void> _startSweepGesture() async {
-    setState(() {
-      phase = SweepPhase.result;
-      resultState = 'inconclusive';
-      resultReason = 'LEGACY_SWEEP_DISABLED';
-      resultMessage = 'The legacy continuous sweep is not accepted because it did not capture real camera frames. Use the guided front-camera and rear-camera verification workflow.';
-    });
+    recordedFrames.clear();
+    recordedMetadata.clear();
+    recordedFrameCount = 0;
+    currentHeading = 0.0;
+    startHeading = 0.0;
+    attemptId = 'att_${DateTime.now().millisecondsSinceEpoch}_${widget.state.user?.id.substring(0, 8)}';
+
+    setState(() => phase = SweepPhase.holdingSelfie);
+    _giveFeedbackCue('start');
+
+    final startTime = DateTime.now();
+
+    // 1. Hold still for ~1.0s (selfie frames with classmates)
+    int selfieSteps = 5;
+    for (int i = 0; i < selfieSteps; i++) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (!mounted) return;
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+      recordedMetadata.add({
+        'index': recordedFrameCount,
+        'heading_deg': 0.0,
+        'time_offset_s': elapsed,
+      });
+      final selfieBytes = await _captureRealFrame();
+      if (selfieBytes != null) recordedFrames.add(selfieBytes);
+      recordedFrameCount++;
+      setState(() {});
+    }
+
+    // 2. Smooth 180° sweep arc (~5-6 seconds)
+    setState(() => phase = SweepPhase.sweeping);
+    _giveFeedbackCue('keep_going');
+
+    int sweepSteps = 12;
+    for (int i = 1; i <= sweepSteps; i++) {
+      await Future.delayed(const Duration(milliseconds: 400));
+      if (!mounted) return;
+      currentHeading = (i / sweepSteps) * 180.0;
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+
+      recordedMetadata.add({
+        'index': recordedFrameCount,
+        'heading_deg': currentHeading,
+        'time_offset_s': elapsed,
+      });
+      final sweepBytes = await _captureRealFrame();
+      if (sweepBytes != null) recordedFrames.add(sweepBytes);
+      recordedFrameCount++;
+
+      if (i % 3 == 0) _giveFeedbackCue('keep_going');
+      setState(() {});
+    }
+
+    // 3. Hold facing stage for ~1.0s (lecturer frames)
+    setState(() => phase = SweepPhase.holdingLecturer);
+    _giveFeedbackCue('hold');
+
+    for (int i = 0; i < 4; i++) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      if (!mounted) return;
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+      recordedMetadata.add({
+        'index': recordedFrameCount,
+        'heading_deg': 180.0,
+        'time_offset_s': elapsed,
+      });
+      final lecBytes = await _captureRealFrame();
+      if (lecBytes != null) recordedFrames.add(lecBytes);
+      recordedFrameCount++;
+      setState(() {});
+    }
+
+    _giveFeedbackCue('done');
+
+    if (isPracticeMode) {
+      setState(() {
+        phase = SweepPhase.result;
+        resultState = 'practice_complete';
+        resultReason = 'PRACTICE_MODE';
+        resultMessage = 'Practice sweep complete! You covered a full 180° arc. You are ready for live check-in.';
+      });
+      return;
+    }
+
+    // Submit live verification sweep
+    await _uploadSweepAttempt();
   }
 
   Future<void> _uploadSweepAttempt() async {
@@ -192,6 +347,24 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
                     ],
                   ),
                 ),
+                if (_cameraPermissionError) ...[
+                  const AppCard(
+                    padding: EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Icon(Icons.videocam_off_rounded, color: AppColors.rose, size: 20),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Camera unavailable. Grant camera permission to run the live sweep check-in.',
+                            style: TextStyle(fontSize: 12.5, color: AppColors.slate, height: 1.35),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 const Spacer(),
                 // Visual Practice Indicator
                 Center(

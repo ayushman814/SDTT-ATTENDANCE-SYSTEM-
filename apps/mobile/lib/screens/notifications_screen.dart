@@ -177,17 +177,14 @@ class _NotificationCard extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      if (item.createdAt != null)
-                        Text(
-                          DateFormat.yMMMd().add_jm().format(item.createdAt!.toLocal()),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.muted,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        )
-                      else
-                        const SizedBox(),
+                      Text(
+                        DateFormat.yMMMd().add_jm().format(item.createdAt.toLocal()),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.muted,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
                       if (!item.read)
                         const Text(
                           'Tap to mark read',

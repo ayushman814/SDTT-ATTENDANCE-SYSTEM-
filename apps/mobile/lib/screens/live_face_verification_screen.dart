@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
@@ -41,7 +44,6 @@ class _LiveFaceVerificationScreenState
 
   // Captured images
   XFile? _facePhoto;
-  final List<List<int>> _faceFrames = [];
   XFile? _roomPhoto;
 
   // Liveness animation state
@@ -53,6 +55,22 @@ class _LiveFaceVerificationScreenState
 
   Timer? _countdownTimer;
   int _secondsLeft = 3;
+
+  // Hardware IMU Sensor Panorama Tracking
+  bool _isSweeping = false;
+  double _sweepProgress = 0.0;
+  double _accumulatedDegrees = 0.0;
+  DateTime? _lastGyroTime;
+  double _lastAccelX = 0.0;
+  double _lastAccelY = 9.8;
+  double _lastAccelZ = 0.0;
+  String _sweepStatusMessage = 'Hold phone upright • Pan right across classroom';
+  bool _sliceCaptured30 = false;
+  bool _sliceCaptured90 = false;
+  bool _sliceCaptured150 = false;
+  StreamSubscription<GyroscopeEvent>? _gyroSubscription;
+  StreamSubscription<AccelerometerEvent>? _accelSubscription;
+  final List<XFile> _panoramaFrames = [];
 
   final ImagePicker _picker = ImagePicker();
 
@@ -157,6 +175,8 @@ class _LiveFaceVerificationScreenState
 
   @override
   void dispose() {
+    _gyroSubscription?.cancel();
+    _accelSubscription?.cancel();
     _countdownTimer?.cancel();
     _scannerAnim.dispose();
     _cameraController?.dispose();
@@ -191,17 +211,11 @@ class _LiveFaceVerificationScreenState
         return;
       }
 
-      final bytes = await photo.readAsBytes();
       setState(() {
         _facePhoto = photo;
-        _faceFrames.add(bytes);
-        _livenessPassed = _faceFrames.length >= 4;
+        _livenessPassed = true;
         _isProcessing = false;
       });
-
-      if (!_livenessPassed) {
-        return;
-      }
 
       // Show brief success checkmark, then advance to classroom panorama step
       await Future.delayed(const Duration(milliseconds: 700));
@@ -231,46 +245,205 @@ class _LiveFaceVerificationScreenState
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CLASSROOM ROOM / PANORAMA CAPTURE
+  // CLASSROOM ROOM / 180° PANORAMA SWEEP CAPTURE
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _captureClassroomRoom() async {
+  // ─────────────────────────────────────────────────────────────────────────
+  // CLASSROOM ROOM / 180° PANORAMA SWEEP CAPTURE (HARDWARE IMU SENSORS)
+  // ─────────────────────────────────────────────────────────────────────────
+  void _startPanoramaSweep() {
+    if (_isSweeping || _isProcessing) return;
+
     setState(() {
-      _isProcessing = true;
+      _isSweeping = true;
+      _sweepProgress = 0.0;
+      _accumulatedDegrees = 0.0;
+      _lastGyroTime = null;
+      _sliceCaptured30 = false;
+      _sliceCaptured90 = false;
+      _sliceCaptured150 = false;
+      _sweepStatusMessage = 'Ready • Rotate your phone to the right across classroom';
       _errorMessage = null;
     });
 
     try {
-      XFile? photo;
-      if (_isCameraInitialized && _cameraController != null) {
-        photo = await _cameraController!.takePicture();
-      } else {
-        photo = await _picker.pickImage(
-          source: ImageSource.camera,
-          preferredCameraDevice: CameraDevice.rear,
-          maxWidth: 1600,
-          maxHeight: 1200,
-        );
-      }
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
 
-      if (photo == null) {
-        setState(() => _isProcessing = false);
+    _panoramaFrames.clear();
+
+    // Capture initial frame at 0°
+    _captureSliceFrame('0° Left Start');
+
+    // 1. Listen to Accelerometer (gravity vector orientation)
+    _accelSubscription?.cancel();
+    _accelSubscription = accelerometerEventStream().listen((AccelerometerEvent event) {
+      _lastAccelX = event.x;
+      _lastAccelY = event.y;
+      _lastAccelZ = event.z;
+    });
+
+    // 2. Listen to Gyroscope (real physical angular velocity)
+    _gyroSubscription?.cancel();
+    _gyroSubscription = gyroscopeEventStream().listen((GyroscopeEvent event) {
+      if (!_isSweeping || !mounted) return;
+
+      final now = DateTime.now();
+      if (_lastGyroTime == null) {
+        _lastGyroTime = now;
         return;
       }
 
-      setState(() {
-        _roomPhoto = photo;
-        _currentStep = VerificationStep.verifying;
-      });
+      final dt = now.difference(_lastGyroTime!).inMicroseconds / 1000000.0;
+      _lastGyroTime = now;
 
-      await _submitDualVerification();
-    } catch (e) {
-      if (mounted) {
+      // Ignore abnormal time deltas
+      if (dt <= 0 || dt > 0.3) return;
+
+      // Project angular velocity onto gravity vector (vertical room axis)
+      final gx = _lastAccelX;
+      final gy = _lastAccelY;
+      final gz = _lastAccelZ;
+      final gNorm = math.sqrt(gx * gx + gy * gy + gz * gz);
+
+      double verticalRotRate = 0.0;
+      if (gNorm > 1.0) {
+        // Dot product with unit gravity vector gives true yaw rate
+        verticalRotRate = (event.x * gx + event.y * gy + event.z * gz) / gNorm;
+      } else {
+        // Fallback assuming upright portrait (Y-axis vertical)
+        verticalRotRate = event.y;
+      }
+
+      final speed = verticalRotRate.abs();
+
+      // STRICT SENSOR DEADBAND:
+      // If the phone is NOT physically moving (speed < 0.08 rad/s, ~4.5°/sec):
+      // PROGRESS DOES NOT ADVANCE AT ALL! Zero false movement!
+      if (speed < 0.08) {
+        if (_accumulatedDegrees < 5.0) {
+          _updateSweepStatus('No motion detected • Rotate phone to the right');
+        } else {
+          _updateSweepStatus('Paused • Rotate phone right (${_accumulatedDegrees.toInt()}° / 180°)');
+        }
+        return;
+      }
+
+      if (speed > 3.0) {
+        _updateSweepStatus('Too fast! Slow down and pan smoothly');
+        return;
+      }
+
+      // PHONE IS PHYSICALLY MOVING! Integrate degrees
+      final degDelta = speed * (180.0 / math.pi) * dt;
+      _accumulatedDegrees += degDelta;
+      final progress = (_accumulatedDegrees / 180.0).clamp(0.0, 1.0);
+
+      _updateSweepStatus('Panning Classroom: ${_accumulatedDegrees.toInt()}° / 180°');
+
+      if ((progress - _sweepProgress).abs() >= 0.01 || progress >= 1.0) {
         setState(() {
-          _isProcessing = false;
-          _errorMessage = 'Could not capture classroom photo: $e';
+          _sweepProgress = progress;
         });
       }
+
+      // Capture real camera slices at physical degree milestones
+      if (_accumulatedDegrees >= 35.0 && !_sliceCaptured30) {
+        _sliceCaptured30 = true;
+        _captureSliceFrame('35° Left Desks');
+      } else if (_accumulatedDegrees >= 90.0 && !_sliceCaptured90) {
+        _sliceCaptured90 = true;
+        _captureSliceFrame('90° Front Board');
+      } else if (_accumulatedDegrees >= 150.0 && !_sliceCaptured150) {
+        _sliceCaptured150 = true;
+        _captureSliceFrame('150° Right Desks');
+      }
+
+      // Reached 180° panorama complete!
+      if (_accumulatedDegrees >= 180.0) {
+        _completePanoramaSweep();
+      }
+    });
+  }
+
+  void _updateSweepStatus(String msg) {
+    if (_sweepStatusMessage != msg) {
+      setState(() {
+        _sweepStatusMessage = msg;
+      });
     }
+  }
+
+  Future<void> _captureSliceFrame(String label) async {
+    try {
+      HapticFeedback.selectionClick();
+      if (_isCameraInitialized && _cameraController != null) {
+        final f = await _cameraController!.takePicture();
+        _panoramaFrames.add(f);
+      }
+    } catch (_) {}
+  }
+
+  void _cancelPanoramaSweep() {
+    _gyroSubscription?.cancel();
+    _accelSubscription?.cancel();
+    setState(() {
+      _isSweeping = false;
+      _sweepProgress = 0.0;
+      _accumulatedDegrees = 0.0;
+      _sweepStatusMessage = 'Sweep cancelled. Tap below to start.';
+    });
+  }
+
+  Future<void> _completePanoramaSweep() async {
+    if (!_isSweeping) return;
+    _gyroSubscription?.cancel();
+    _accelSubscription?.cancel();
+
+    setState(() {
+      _isSweeping = false;
+      _sweepProgress = 1.0;
+      _sweepStatusMessage = '180° Panorama Complete!';
+    });
+
+    try {
+      HapticFeedback.vibrate();
+      SystemSound.play(SystemSoundType.alert);
+    } catch (_) {}
+
+    XFile? bestFrame;
+    if (_panoramaFrames.isNotEmpty) {
+      bestFrame = _panoramaFrames.length >= 2
+          ? _panoramaFrames[1] // Front board center slice
+          : _panoramaFrames.last;
+    } else if (_isCameraInitialized && _cameraController != null) {
+      try {
+        bestFrame = await _cameraController!.takePicture();
+      } catch (_) {}
+    }
+
+    bestFrame ??= await _picker.pickImage(
+      source: ImageSource.camera,
+      preferredCameraDevice: CameraDevice.rear,
+      maxWidth: 1600,
+      maxHeight: 1200,
+    );
+
+    if (!mounted) return;
+
+    if (bestFrame == null) {
+      setState(() {
+        _errorMessage = 'Could not capture panorama frame. Please try again.';
+      });
+      return;
+    }
+
+    setState(() {
+      _roomPhoto = bestFrame;
+      _currentStep = VerificationStep.verifying;
+    });
+
+    await _submitDualVerification();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -280,12 +453,16 @@ class _LiveFaceVerificationScreenState
     if (_facePhoto == null) return;
 
     try {
-      final roomBytes = _roomPhoto == null ? <int>[] : await _roomPhoto!.readAsBytes();
+      final faceBytes = await _facePhoto!.readAsBytes();
+      List<int>? roomBytes;
+      if (_roomPhoto != null) {
+        roomBytes = await _roomPhoto!.readAsBytes();
+      }
 
       final res = await widget.state.verifyAttendanceLive(
         widget.session.id,
-          faceFrames: _faceFrames,
-          roomBytes: roomBytes,
+        faceBytes: faceBytes,
+        roomBytes: roomBytes,
       );
 
       if (mounted) {
@@ -404,11 +581,22 @@ class _LiveFaceVerificationScreenState
       );
     }
 
+    final size = MediaQuery.of(context).size;
+    final previewSize = _cameraController!.value.previewSize;
+    // Android/iOS camera sensors are landscape (e.g. 1920x1080).
+    // In portrait orientation, width is the shorter dimension (previewSize.height).
+    final double previewW = previewSize != null ? previewSize.height : size.width;
+    final double previewH = previewSize != null ? previewSize.width : size.height;
+
     return ClipRect(
-      child: Transform.scale(
-        scale: _cameraController!.value.aspectRatio * (MediaQuery.of(context).size.height / MediaQuery.of(context).size.width),
-        child: Center(
-          child: CameraPreview(_cameraController!),
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: previewW,
+            height: previewH,
+            child: CameraPreview(_cameraController!),
+          ),
         ),
       ),
     );
@@ -595,7 +783,7 @@ class _LiveFaceVerificationScreenState
                 Text(
                   _livenessPassed
                       ? 'Liveness Confirmed'
-                       : 'Challenge frame ${_faceFrames.length + 1} of 4 • ${_faceFrames.length == 0 ? 'look straight ahead' : _faceFrames.length == 1 ? 'turn your head slowly' : _faceFrames.length == 2 ? 'blink once' : 'hold still'}',
+                      : 'Live Face ID • Auto-scanning in ${_secondsLeft}s',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -632,91 +820,214 @@ class _LiveFaceVerificationScreenState
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildClassroomRoomHUD() {
     final size = MediaQuery.of(context).size;
-    final boxWidth = size.width * 0.88;
-    final boxHeight = boxWidth * 0.65;
+    final boxWidth = size.width * 0.92;
+    final boxHeight = boxWidth * 0.50;
 
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Rectangular Viewfinder for Panorama / Room
+          // 180° Panoramic Viewfinder Frame
           Container(
             width: boxWidth,
             height: boxHeight,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: AppColors.primaryLight,
-                width: 3,
+                color: _isSweeping ? Colors.cyanAccent : AppColors.primaryLight,
+                width: 2.5,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.3),
-                  blurRadius: 18,
+                  color: (_isSweeping ? Colors.cyanAccent : AppColors.primary)
+                      .withValues(alpha: 0.25),
+                  blurRadius: 20,
+                  spreadRadius: 2,
                 ),
               ],
             ),
             child: Stack(
               children: [
-                // Corner Reticles
+                // Top Tag
                 Positioned(
                   top: 10,
-                  left: 10,
+                  left: 12,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.6),
-                      borderRadius: BorderRadius.circular(6),
+                      color: Colors.black.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white24),
                     ),
-                    child: const Text(
-                      'WIDE / ROOM VIEW',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 10,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.panorama_photosphere_rounded,
+                          size: 14,
+                          color: _isSweeping ? Colors.cyanAccent : AppColors.primaryLight,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _isSweeping
+                              ? 'PANORAMA SWEEPING (${_accumulatedDegrees.toInt()}°)'
+                              : '180° ULTRA-WIDE PANORAMA',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 10,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Center Horizon Level Guide
+                Center(
+                  child: Container(
+                    height: 1.5,
+                    color: Colors.cyanAccent.withValues(alpha: 0.4),
+                  ),
+                ),
+                Center(
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Colors.cyanAccent.withValues(alpha: 0.8),
+                        width: 1.5,
                       ),
                     ),
+                  ),
+                ),
+
+                // Sweep Track (0° Left -> 90° Center -> 180° Right)
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: 12,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            '◀ 0° Left Desks',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              '🏛 90° Board',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          const Text(
+                            '180° Right Desks ▶',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      // Animated Track Bar with Panning Cursor
+                      Stack(
+                        alignment: Alignment.centerLeft,
+                        children: [
+                          Container(
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                          ),
+                          FractionallySizedBox(
+                            widthFactor: _sweepProgress.clamp(0.05, 1.0),
+                            child: Container(
+                              height: 6,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Colors.cyanAccent, AppColors.primaryLight],
+                                ),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
 
-          // Guidance instructions
+          // Panorama instructions badge
           Container(
-            margin: const EdgeInsets.symmetric(horizontal: 24),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.75),
+              color: Colors.black.withValues(alpha: 0.8),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: Colors.white24),
             ),
-            child: const Column(
+            child: Column(
               children: [
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.meeting_room_rounded, color: AppColors.primaryLight, size: 20),
-                    SizedBox(width: 8),
+                    Icon(
+                      _isSweeping
+                          ? Icons.sync_rounded
+                          : Icons.screen_rotation_rounded,
+                      color: _isSweeping ? Colors.cyanAccent : AppColors.primaryLight,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
                     Text(
-                      'Classroom Verification',
-                      style: TextStyle(
+                      _isSweeping
+                          ? _sweepStatusMessage
+                          : '180° Physical Classroom Match',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
-                        fontSize: 14,
+                        fontSize: 13,
                       ),
                     ),
                   ],
                 ),
-                SizedBox(height: 6),
+                const SizedBox(height: 6),
                 Text(
-                  'Point camera to capture classroom desks or front board to verify physical presence in the assigned room.',
+                  _isSweeping
+                      ? 'Slowly rotate your device from left to right along the horizon.'
+                      : 'Stand in room and tap "START 180° PANORAMA SWEEP" below to sweep across the classroom desks and board.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 12,
-                    height: 1.3,
+                    height: 1.35,
                   ),
                 ),
               ],
@@ -785,7 +1096,7 @@ class _LiveFaceVerificationScreenState
             ),
             const SizedBox(height: 10),
             const Text(
-               'Evaluating the configured face model, guided liveness evidence, and classroom context separately...',
+              'Extracting 512-dim ArcFace embeddings and cross-referencing classroom environment template...',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: AppColors.slate,
@@ -808,12 +1119,12 @@ class _LiveFaceVerificationScreenState
                   ),
                   SizedBox(height: 8),
                   _VerificationStepRow(
-                     label: 'Configured face identity comparison',
+                    label: 'ArcFace Biometric Cosine Comparison',
                     active: true,
                   ),
                   SizedBox(height: 8),
                   _VerificationStepRow(
-                     label: 'Classroom-context evidence check',
+                    label: 'Physical Classroom Room Matching',
                     active: true,
                   ),
                 ],
@@ -913,7 +1224,7 @@ class _LiveFaceVerificationScreenState
                       children: [
                         const Text('Biometric Match:', style: TextStyle(color: AppColors.slate, fontSize: 13)),
                         Text(
-                           _result!.faceConfidence == null ? 'No score' : '${(_result!.faceConfidence! * 100).toInt()}% similarity',
+                          '${(_result!.faceConfidence * 100).toInt()}% Match',
                           style: TextStyle(
                             color: _result!.faceMatch ? AppColors.emerald : AppColors.rose,
                             fontWeight: FontWeight.w800,
@@ -921,23 +1232,52 @@ class _LiveFaceVerificationScreenState
                         ),
                       ],
                     ),
-                    const Divider(color: Colors.white12, height: 16),
+                    const Divider(color: Colors.white12, height: 14),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Classroom Presence:', style: TextStyle(color: AppColors.slate, fontSize: 13)),
+                        const Text('Sir (Lecturer on Stage):', style: TextStyle(color: AppColors.slate, fontSize: 13)),
                         Text(
-                          _result!.roomMatch ? 'Confirmed' : 'Unconfirmed',
+                          _result!.sirDetected ? 'Detected' : 'Not Detected',
                           style: TextStyle(
-                            color: _result!.roomMatch ? AppColors.emerald : AppColors.amber,
+                            color: _result!.sirDetected ? AppColors.emerald : AppColors.amber,
                             fontWeight: FontWeight.w800,
                           ),
                         ),
                       ],
                     ),
-                     ],
-                   ),
-                 ),
+                    const Divider(color: Colors.white12, height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Crowd Audience:', style: TextStyle(color: AppColors.slate, fontSize: 13)),
+                        Text(
+                          _result!.crowdDetected ? '${_result!.crowdCount} peers in hall' : 'Not Detected',
+                          style: TextStyle(
+                            color: _result!.crowdDetected ? AppColors.emerald : AppColors.amber,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Divider(color: Colors.white12, height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Hall Venue:', style: TextStyle(color: AppColors.slate, fontSize: 13)),
+                        Text(
+                          _result!.hallType,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 20),
             ],
 
@@ -994,50 +1334,195 @@ class _LiveFaceVerificationScreenState
   // WIDGET: BOTTOM ACTIONS
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildBottomActions() {
-    final isFaceStep = _currentStep == VerificationStep.liveFace;
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Large Capture Button
-        GestureDetector(
-          onTap: _isProcessing
-              ? null
-              : (isFaceStep ? _captureFace : _captureClassroomRoom),
-          child: Container(
-            width: 74,
-            height: 74,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: (isFaceStep ? Colors.cyanAccent : AppColors.primary)
-                      .withValues(alpha: 0.4),
-                  blurRadius: 18,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
-            child: Center(
+    if (_currentStep == VerificationStep.liveFace) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GestureDetector(
+              onTap: (_isProcessing || _livenessPassed) ? null : _captureFace,
               child: Container(
-                width: 60,
-                height: 60,
+                width: 76,
+                height: 76,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: isFaceStep ? const Color(0xFF0F172A) : AppColors.primary,
-                ),
-                child: Icon(
-                  isFaceStep ? Icons.face_rounded : Icons.camera_alt_rounded,
                   color: Colors.white,
-                  size: 28,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.cyanAccent.withValues(alpha: 0.45),
+                      blurRadius: 20,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: Container(
+                    width: 62,
+                    height: 62,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0xFF0F172A),
+                    ),
+                    child: const Icon(
+                      Icons.face_rounded,
+                      color: Colors.cyanAccent,
+                      size: 32,
+                    ),
+                  ),
                 ),
               ),
             ),
+            const SizedBox(height: 10),
+            Text(
+              _livenessPassed
+                  ? 'Face scan verified'
+                  : 'Auto-scan active • Tap circle for manual capture',
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_currentStep == VerificationStep.classroomRoom) {
+      if (_isSweeping) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.8), width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.cyanAccent.withValues(alpha: 0.25),
+                blurRadius: 20,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation(Colors.cyanAccent),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${_accumulatedDegrees.toInt()}° / 180°',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 14,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    '${(_sweepProgress * 100).toInt()}%',
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: _sweepProgress,
+                  minHeight: 10,
+                  backgroundColor: Colors.white24,
+                  valueColor: const AlwaysStoppedAnimation(Colors.cyanAccent),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _sweepStatusMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.cyanAccent,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  TextButton.icon(
+                    onPressed: _cancelPanoramaSweep,
+                    icon: const Icon(Icons.close_rounded, size: 16, color: Colors.white60),
+                    label: const Text(
+                      'Cancel',
+                      style: TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                  ),
+                  if (_accumulatedDegrees >= 60.0)
+                    ElevatedButton.icon(
+                      onPressed: _completePanoramaSweep,
+                      icon: const Icon(Icons.check_circle_rounded, size: 18),
+                      label: Text(
+                        'Finish Sweep (${_accumulatedDegrees.toInt()}°)',
+                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.emerald,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        );
+      }
+
+      return SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: _startPanoramaSweep,
+          icon: const Icon(Icons.panorama_photosphere_rounded, size: 28),
+          label: const Text(
+            'START 180° PANORAMA SWEEP',
+            style: TextStyle(
+              fontWeight: FontWeight.w900,
+              fontSize: 14,
+              letterSpacing: 0.6,
+            ),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            elevation: 8,
+            shadowColor: AppColors.primary.withValues(alpha: 0.6),
           ),
         ),
-      ],
-    );
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 }
 

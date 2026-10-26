@@ -58,6 +58,8 @@ class RealtimeService {
     if (!_closed) await _open(onEvent: onEvent, onError: onError);
   }
 
+  Future<void> disconnect() => dispose();
+
   Future<void> dispose() async {
     _closed = true;
     await _subscription?.cancel();

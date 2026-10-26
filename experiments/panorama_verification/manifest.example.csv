@@ -1,0 +1,11 @@
+sweep_id,relative_dir,device_model,volunteer_id,distance_to_lecturer_m,lighting_condition,frame_count,heading_span_deg,expected_outcome,notes
+SWEEP_001,data/raw/SWEEP_001,Budget_Android_A04,VOL_01,3.0,ambient_full,16,180.0,verified,Front row clear lighting
+SWEEP_002,data/raw/SWEEP_002,Budget_Android_A04,VOL_02,6.0,ambient_full,15,180.0,verified,Row 3 standard sweep
+SWEEP_003,data/raw/SWEEP_003,Budget_Android_A04,VOL_03,12.0,ambient_full,16,180.0,flagged,Row 6 lecturer IPD under 30px
+SWEEP_004,data/raw/SWEEP_004,Budget_Android_A04,VOL_04,18.0,ambient_full,14,180.0,flagged,Row 10 lecturer small scale
+SWEEP_005,data/raw/SWEEP_005,Budget_Android_A04,VOL_05,24.0,ambient_full,15,180.0,flagged,Back row lecturer distance
+SWEEP_006,data/raw/SWEEP_006,MidRange_Pixel7a,VOL_01,3.0,ambient_full,18,180.0,verified,Front row sharp sensor
+SWEEP_007,data/raw/SWEEP_007,MidRange_Pixel7a,VOL_02,12.0,dimmed_projection,16,180.0,flagged,Dimmed lighting lecturer review
+SWEEP_008,data/raw/SWEEP_008,MidRange_Pixel7a,VOL_03,24.0,ambient_full,17,180.0,flagged,Row 14 lecturer IPD low
+SWEEP_009,data/raw/SWEEP_009,Flagship_S24Ultra,VOL_04,6.0,ambient_full,20,180.0,verified,Row 3 high resolution
+SWEEP_010,data/raw/SWEEP_010,Flagship_S24Ultra,VOL_05,18.0,ambient_full,19,180.0,flagged,Row 10 distance

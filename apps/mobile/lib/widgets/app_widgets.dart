@@ -36,6 +36,7 @@ class AppColors {
   static const slate = Color(0xFF475569); // Slate-600
   static const muted = Color(0xFF94A3B8); // Slate-400
   static const border = Color(0xFFE2E8F0); // Slate-200
+  static const line = border;
   static const borderHighlight = Color(0xFFCBD5E1);
 
   // Gradients
@@ -792,3 +793,67 @@ class EmptyState extends StatelessWidget {
     );
   }
 }
+
+class AppTextField extends StatelessWidget {
+  const AppTextField({
+    super.key,
+    required this.controller,
+    required this.label,
+    this.hint,
+    this.prefixIcon,
+    this.obscureText = false,
+    this.keyboardType,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final IconData? prefixIcon;
+  final bool obscureText;
+  final TextInputType? keyboardType;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+            color: AppColors.slate,
+          ),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: controller,
+          obscureText: obscureText,
+          keyboardType: keyboardType,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.ink),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(fontSize: 13, color: AppColors.muted),
+            prefixIcon: prefixIcon != null ? Icon(prefixIcon, size: 20, color: AppColors.slate) : null,
+            filled: true,
+            fillColor: AppColors.cardSubtle,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
