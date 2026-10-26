@@ -1,28 +1,24 @@
 # Build and integration validation
 
-Validation run: 2026-10-20, in the approved Manus Sandbox.
+Validation run: 2026-10-26, in the Manus Sandbox clone of `pragna1004/SDTT-ATTENDANCE-SYSTEM-`.
 
-## Toolchain and results
+## Checks completed
 
-- Flutter stable 3.47.7 / Dart 3.13.5 installed under `/home/ubuntu/tools/flutter` after the user approved the download.
-- `flutter analyze` — no issues.
-- `flutter test` — widget login/privacy smoke test passed.
-- `flutter build web` — succeeded; generated `apps/mobile/build/web`.
-- Backend `.venv/bin/pytest -q` — 4 passed. The test runner emitted a Starlette/httpx deprecation warning from the test-client dependency; tests passed.
-- Dashboard `npm run build` — TypeScript check and Vite production build succeeded.
-- Backend health endpoint returned HTTP 200 during validation.
+- Backend Python compilation: `python -m py_compile app/main.py app/vision.py tests/test_api.py tests/test_vision.py` — passed.
+- Backend tests: `python -m pytest -q` in an isolated test virtual environment — **15 passed**. Tests cover timed-session transitions, role/JWT contract helpers, disabled legacy capture, private-image retention behavior, image quality outcomes, fail-closed detector errors, scene evidence, and removal of embedded EXIF from stored copies. The vision tests inject a deterministic detector; they do not download Ultralytics weights or call Supabase.
+- Dashboard: `npm run build` in `apps/dashboard/` — TypeScript check and Vite production bundle passed.
 
-## What was not validated
+## Checks not available or not performed
 
-The sandbox does not contain an Android SDK or an attached phone, so no APK build, emulator launch, or native camera behavior test is claimed. Native iOS builds require macOS/Xcode. There was no external public-site deployment or full two-device browser/mobile E2E demonstration. WebSocket authorization and event behavior are covered by backend tests; both client implementations compile against the shared event contract.
+- Flutter/Dart validation was not run: neither `flutter` nor `dart` is installed in the current sandbox. Mobile source changes therefore still need `flutter analyze`, `flutter test`, and a web build in a Flutter-enabled environment.
+- No Supabase project credentials were available. Schema execution, Supabase Auth, RLS, private Storage upload/signed URLs, realtime network behavior, and full frontend-to-backend E2E flows have not been tested against a live service.
+- No YOLO weight download/inference benchmark was performed. The model is loaded lazily in production and detector behavior in unit tests is injected.
+- No Android/iOS device camera, native build, public deployment, accuracy/fairness benchmark, or production-security review is claimed.
 
-## Flutter setup references
+## Reproducible commands
 
-The SDK was installed from the official stable Flutter repository/channel, following the official Linux manual installation guide and SDK archive documentation:
+From `backend/`, use `python -m venv .venv`, activate it, install `requirements.txt`, then run `python -m py_compile app/main.py app/vision.py tests/test_api.py tests/test_vision.py` and `python -m pytest -q`. A first real inference may download the configured Ultralytics model weights; consider supplying an approved local file with `ATTENDANCE_PERSON_MODEL` after license and provenance review.
 
-- [Install Flutter manually](https://docs.flutter.dev/install/manual)
-- [Flutter SDK archive](https://docs.flutter.dev/install/archive)
+From `apps/dashboard/`, run `npm ci` followed by `npm run build`.
 
-## Prototype safety boundary
-
-Capture is a simulated suggestion workflow, not face recognition. The API never creates or stores face embeddings and does not persist uploaded images in application storage. Multipart parsing may spool large uploads to request-scoped temporary storage before the request finishes. Teachers must review suggestions and explicitly finalize the session. Do not use real student information or treat this prototype as production school attendance software.
+From `apps/mobile/` in a Flutter-enabled environment, run `flutter pub get`, `flutter analyze`, `flutter test`, and optionally `flutter build web`. Native Android camera behavior needs an Android SDK/device; native iOS builds need macOS/Xcode.

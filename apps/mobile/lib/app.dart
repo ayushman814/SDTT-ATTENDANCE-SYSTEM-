@@ -46,20 +46,7 @@ class _AttendanceAppState extends State<AttendanceApp> {
           },
         ),
       ),
-      home: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 350),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, animation) {
-          return FadeTransition(
-            opacity: animation,
-            child: child,
-          );
-        },
-        child: state.user == null
-            ? LoginScreen(key: const ValueKey('login'), state: state)
-            : HomeScreen(key: const ValueKey('home'), state: state),
-      ),
+      home: HomeScreen(state: state),
     );
   }
 }

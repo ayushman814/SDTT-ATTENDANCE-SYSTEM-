@@ -1,18 +1,21 @@
 export type Role = 'teacher' | 'student'
 export type AttendanceStatus = 'present' | 'absent' | 'pending'
 
-export interface User { id: string; name: string; email: string; role: Role }
+export interface User { id: string; name: string; email: string; role: Role; registration_id?: string }
 export interface ClassItem { id: string; name: string; code?: string; schedule?: string; room?: string; student_count?: number }
-export interface AttendanceEntry { student_id: string; student_name: string; student_email?: string; status: AttendanceStatus; confidence?: number; note?: string; changed_at?: string; updated_at?: string }
+export interface AttendanceEntry { student_id: string; registration_id?: string; student_name: string; student_email?: string; status: AttendanceStatus; verification_status?: string; verification_source?: string; submission_time?: string; confidence?: number; note?: string; changed_at?: string; updated_at?: string }
 export interface Suggestion { student_id: string; student_name: string; confidence: number; status?: 'suggestion' | AttendanceStatus }
-export interface Session { id: string; class_id: string; class_name?: string; started_at: string; created_at?: string; finalized_at?: string | null; status?: 'open' | 'finalized'; attendance?: AttendanceEntry[]; suggestions?: Suggestion[]; present_count?: number; absent_count?: number; pending_count?: number }
+export type SessionStatus = 'scheduled' | 'open' | 'closed' | 'finalized'
+export interface Session { id: string; class_id: string; title?: string; class_name?: string; professor_name?: string; started_at: string; created_at?: string; opens_at?: string; deadline_at?: string; closed_at?: string | null; finalized_at?: string | null; status?: SessionStatus; stage_region?: { x: number; y: number; width: number; height: number } | null; minimum_people_visible?: number; submission?: { id: string; status: string; submitted_at: string; explanation: string; review_decision?: string | null; review_reason?: string | null } | null; attendance?: AttendanceEntry[]; suggestions?: Suggestion[]; present_count?: number; absent_count?: number; pending_count?: number }
 export interface AttendanceSummary { present: number; absent: number; pending: number; total_finalized: number; percentage: number | null }
-export interface StudentAttendanceEntry { session_id: string; class_name?: string; created_at: string; updated_at?: string; status: AttendanceStatus; note?: string }
+export interface StudentAttendanceEntry { session_id: string; class_name?: string; created_at: string; updated_at?: string; status: AttendanceStatus; verification_status?: string; verification_source?: string; submission_time?: string; note?: string }
 export interface StudentAttendance { entries: StudentAttendanceEntry[]; summary: AttendanceSummary }
+export interface ImageSubmission { id: string; session_id: string; student_id: string; student_name: string; student_email?: string; submitted_at: string; status: string; explanation: string; quality_result?: Record<string, unknown>; detected_people?: number | null; nearby_people?: number | null; stage_person_detected?: boolean | null; image_url?: string | null; review_decision?: string | null; review_reason?: string | null; attempt_number: number }
 export interface Notification { id: string; title: string; body: string; created_at: string; read_at?: string | null; read: boolean }
 export interface AuditItem { id: string; session_id: string; action: string; timestamp: string; note?: string | null; metadata?: Record<string, unknown>; actor_name?: string; created_at?: string; details?: string }
-export interface ReportRow { name: string; email: string; status: AttendanceStatus; note?: string | null; updated_at?: string }
-export interface Report { session: Session; rows: ReportRow[]; csv: string; pdf_html: string }
+export interface ReportRow { student_code?: string; name: string; email: string; status: AttendanceStatus; verification_status?: string; review_decision?: string | null; submission_time?: string | null; note?: string | null; updated_at?: string }
+export interface ReportSummary { total_enrolled: number; automatically_verified_present: number; manually_approved_present: number; rejected_submissions: number; awaiting_review: number; did_not_submit: number; final_absent: number }
+export interface Report { session: Session; rows: ReportRow[]; summary?: ReportSummary; csv: string; pdf_html: string }
 
 export const demoTeacher: User = { id: 'teacher-1', name: 'Dr. Mira Chen', email: 'teacher@demo.edu', role: 'teacher' }
 export const demoStudent: User = { id: 'student-1', name: 'Jordan Ellis', email: 'student1@demo.edu', role: 'student' }

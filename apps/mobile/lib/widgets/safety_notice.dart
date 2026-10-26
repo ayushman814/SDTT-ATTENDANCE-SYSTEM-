@@ -12,6 +12,6 @@ class SafetyNotice extends StatelessWidget {
             style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         const Text(
-            'Camera captures are uploaded for this session only and removed locally after upload when possible. The API returns simulated suggestions; this demo does not recognize faces or retain images/templates. Notifications stay in this app.')
+            'Student-submitted images are stored in private storage for attendance review and are subject to the configured retention period. Person detection provides scene evidence only; it does not identify anyone and no biometric templates are created. A professor reviews uncertain evidence. Notifications stay in this app.')
       ]));
 }

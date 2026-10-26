@@ -3,14 +3,15 @@
 Auth:  Supabase Auth (JWT verification via PyJWT + SUPABASE_JWT_SECRET).
 DB:    Supabase PostgreSQL (via supabase-py service-role client).
 
-This service intentionally implements synthetic, review-first attendance only.
-It never stores uploaded photos or face embeddings and makes no
-biometric/production claims.
+This service validates classroom scene evidence without identifying people.
+Uncertain images are held in private storage for review and are deleted after
+the configured retention period; no face embeddings are created.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import csv
 import io
 import json
@@ -18,10 +19,12 @@ import os
 import secrets
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from html import escape
 from typing import Any, Optional
+from typing import Literal
 
 import jwt as pyjwt
 from fastapi import (
@@ -52,6 +55,11 @@ SUPABASE_JWT_SECRET: str = os.environ["SUPABASE_JWT_SECRET"]
 
 WS_TICKET_TTL_SECONDS = int(os.getenv("ATTENDANCE_WS_TICKET_TTL_SECONDS", "60"))
 MAX_CAPTURE_BYTES = int(os.getenv("ATTENDANCE_MAX_CAPTURE_BYTES", "10485760"))
+ATTENDANCE_STORAGE_BUCKET = os.getenv("ATTENDANCE_STORAGE_BUCKET", "attendance-submissions")
+ATTENDANCE_MIN_VISIBLE_PEOPLE = int(os.getenv("ATTENDANCE_MIN_VISIBLE_PEOPLE", "2"))
+ATTENDANCE_IMAGE_RETENTION_DAYS = int(os.getenv("ATTENDANCE_IMAGE_RETENTION_DAYS", "30"))
+if not 1 <= ATTENDANCE_IMAGE_RETENTION_DAYS <= 3650:
+    raise RuntimeError("ATTENDANCE_IMAGE_RETENTION_DAYS must be between 1 and 3650")
 CORS_ORIGINS = [
     v.strip()
     for v in os.getenv(
@@ -91,16 +99,17 @@ def utc_now() -> str:
 
 
 def _verify_supabase_jwt(token: str) -> dict[str, Any]:
-    """Decode and verify a Supabase-issued JWT."""
+    """Cryptographically verify a Supabase-issued access token."""
     try:
-        # Try decoding with unverified options or verify signature if secret matches
         payload = pyjwt.decode(
             token,
-            options={"verify_signature": False},
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
         )
         return payload
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid or expired access token")
 
 
 def current_user(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -113,9 +122,9 @@ def current_user(authorization: Optional[str] = Header(default=None)) -> dict[st
         if user_resp and user_resp.user:
             uid = user_resp.user.id
     except Exception:
-        pass
-
-    if not uid:
+        # Supabase may be temporarily unreachable; the local fallback still
+        # verifies the signature, audience, and expiry rather than trusting
+        # attacker-controlled JWT claims.
         payload = _verify_supabase_jwt(token)
         uid = payload.get("sub", "")
 
@@ -135,12 +144,18 @@ def require_teacher(user: dict[str, Any]) -> None:
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
-    email: str
+    identifier: Optional[str] = None
+    email: Optional[str] = None
     password: str
 
 
 class CreateSessionRequest(BaseModel):
     class_id: str  # UUID
+    title: str = Field(default="Attendance session", min_length=1, max_length=120)
+    opens_at: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
+    stage_region: Optional[dict[str, float]] = None
+    minimum_people_visible: int = Field(default=2, ge=1, le=30)
 
 
 class AttendanceUpdate(BaseModel):
@@ -152,6 +167,61 @@ class FinalizeRequest(BaseModel):
     mark_pending_absent: bool
 
 
+class SubmissionReviewRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def cleanup_expired_images(limit: int = 500) -> int:
+    """Delete expired private image objects and clear their storage references."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=ATTENDANCE_IMAGE_RETENTION_DAYS)).isoformat()
+    expired = (
+        supa().table("image_submissions")
+        .select("id, storage_path, submitted_at")
+        .lt("submitted_at", cutoff)
+        .is_("image_purged_at", "null")
+        .limit(limit)
+        .execute()
+    )
+    removed = 0
+    for item in expired.data or []:
+        path = item.get("storage_path")
+        # Keep the path and marker unchanged if storage deletion fails so a
+        # later hourly pass retries the same object.
+        if path:
+            supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).remove([path])
+        supa().table("image_submissions").update(
+            {"storage_path": None, "image_sha256": None, "image_purged_at": utc_now()}
+        ).eq("id", item["id"]).execute()
+        removed += bool(path)
+    return removed
+
+
+async def _image_retention_clock() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(cleanup_expired_images)
+        except Exception:
+            # Retry on the next hourly pass; never delete attendance metadata.
+            pass
+        await asyncio.sleep(3600)
+
+
+async def _session_clock() -> None:
+    while True:
+        try:
+            due = (
+                supa().table("sessions").select("id, status, opens_at, deadline_at, closed_at")
+                .in_("status", ["scheduled", "open"]).execute()
+            )
+            for row in due.data or []:
+                _sync_session_state(row)
+        except Exception:
+            # Session submissions independently enforce their own deadline.
+            pass
+        await asyncio.sleep(15)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -160,7 +230,14 @@ async def lifespan(_: FastAPI):
         supa().table("profiles").select("id").limit(1).execute()
     except Exception as exc:
         raise RuntimeError(f"Cannot connect to Supabase: {exc}") from exc
-    yield
+    clock = asyncio.create_task(_session_clock())
+    retention = asyncio.create_task(_image_retention_clock())
+    try:
+        yield
+    finally:
+        clock.cancel()
+        retention.cancel()
+        await asyncio.gather(clock, retention, return_exceptions=True)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -201,6 +278,39 @@ def _assert_class_access(cls: dict[str, Any], user: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="You do not have access to this class")
 
 
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _sync_session_state(row: dict[str, Any]) -> dict[str, Any]:
+    """Derive the session state from server time; the client's clock is ignored."""
+    if row.get("status") in {"closed", "finalized"}:
+        return row
+    now = datetime.now(timezone.utc)
+    opens_at = _parse_datetime(row.get("opens_at"))
+    deadline_at = _parse_datetime(row.get("deadline_at"))
+    if deadline_at and now >= deadline_at:
+        next_status = "closed"
+    elif opens_at and now < opens_at:
+        next_status = "scheduled"
+    else:
+        next_status = "open"
+    if row.get("status") != next_status:
+        changes = {"status": next_status}
+        if next_status == "closed":
+            changes["closed_at"] = utc_now()
+        supa().table("sessions").update(changes).eq("id", row["id"]).execute()
+        if next_status == "closed":
+            row["closed_at"] = changes["closed_at"]
+        row["status"] = next_status
+    return row
+
+
 def _get_session_or_404(session_id: str) -> dict[str, Any]:
     resp = (
         supa()
@@ -218,7 +328,7 @@ def _get_session_or_404(session_id: str) -> dict[str, Any]:
         row["class_name"] = row["classes"]["name"]
         row["class_code"] = row["classes"]["code"]
         row["teacher_id"] = row["classes"]["teacher_id"]
-    return row
+    return _sync_session_state(row)
 
 
 def _assert_session_access(
@@ -241,20 +351,33 @@ def _assert_session_access(
 
 
 def _session_payload(row: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    teacher_id = row.get("teacher_id")
+    professor_name = row.get("professor_name")
+    if teacher_id and not professor_name:
+        professor = supa().table("profiles").select("name").eq("id", teacher_id).limit(1).execute()
+        if professor.data:
+            professor_name = professor.data[0].get("name")
     result: dict[str, Any] = {
         "id": row["id"],
         "class_id": row["class_id"],
+        "title": row.get("title", "Attendance session"),
         "class_name": row.get("class_name", ""),
         "class_code": row.get("class_code", ""),
+        "professor_name": professor_name,
         "status": row["status"],
         "created_at": row["created_at"],
+        "opens_at": row.get("opens_at"),
+        "deadline_at": row.get("deadline_at"),
+        "closed_at": row.get("closed_at"),
+        "stage_region": row.get("stage_region"),
+        "minimum_people_visible": row.get("minimum_people_visible", ATTENDANCE_MIN_VISIBLE_PEOPLE),
         "finalized_at": row.get("finalized_at"),
     }
     if user["role"] == "teacher":
         att = (
             supa()
             .table("attendance")
-            .select("*, profiles!attendance_student_id_fkey(name, email)")
+            .select("*, profiles!attendance_student_id_fkey(name, email, registration_id)")
             .eq("session_id", row["id"])
             .order("profiles!attendance_student_id_fkey(name)")
             .execute()
@@ -266,6 +389,7 @@ def _session_payload(row: dict[str, Any], user: dict[str, Any]) -> dict[str, Any
             if isinstance(prof, dict):
                 flat["name"] = prof["name"]
                 flat["email"] = prof["email"]
+                flat["registration_id"] = prof.get("registration_id")
                 flat.pop("profiles", None)
             entries.append(flat)
         result["attendance"] = entries
@@ -292,12 +416,21 @@ def _session_payload(row: dict[str, Any], user: dict[str, Any]) -> dict[str, Any
         own = (
             supa()
             .table("attendance")
-            .select("status, note, updated_at")
+            .select("status, note, updated_at, verification_status, verification_source")
             .eq("session_id", row["id"])
             .eq("student_id", user["id"])
             .execute()
         )
         result["attendance"] = own.data or []
+        submission_resp = (
+            supa()
+            .table("image_submissions")
+            .select("id, status, submitted_at, explanation, review_decision, review_reason")
+            .eq("session_id", row["id"])
+            .eq("student_id", user["id"])
+            .execute()
+        )
+        result["submission"] = (submission_resp.data or [None])[0]
     return result
 
 
@@ -350,9 +483,20 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest) -> dict[str, Any]:
-    email = req.email.strip().lower()
+    identifier = (req.identifier or req.email or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Invalid ID/email or password")
+    email = identifier.lower()
     try:
-        auth_resp = supa().auth.sign_in_with_password({
+        if "@" not in email:
+            profile = (
+                supa().table("profiles").select("email")
+                .eq("registration_id", identifier).limit(1).execute()
+            )
+            if not profile.data:
+                raise ValueError("Unknown registration ID")
+            email = str(profile.data[0]["email"]).strip().lower()
+        auth_resp = auth_client().auth.sign_in_with_password({
             "email": email,
             "password": req.password,
         })
@@ -360,24 +504,21 @@ def login(req: LoginRequest) -> dict[str, Any]:
         access_token = auth_resp.session.access_token
 
         prof = supa().table("profiles").select("*").eq("id", user_id).single().execute()
-        user_data = prof.data if prof.data else {
-            "id": user_id,
-            "name": auth_resp.user.user_metadata.get("name", "User"),
-            "email": email,
-            "role": auth_resp.user.user_metadata.get("role", "student"),
-        }
+        if not prof.data:
+            raise ValueError("Authenticated user has no provisioned application profile")
+        user_data = prof.data
         return {
             "access_token": access_token,
             "token_type": "bearer",
             "user": user_data,
         }
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid ID/email or password")
 
 
 @app.get("/api/me")
 def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"]}
+    return {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"], "registration_id": user.get("registration_id")}
 
 
 @app.post("/api/auth/ws-ticket")
@@ -439,13 +580,14 @@ def sessions(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any
         resp = (
             supa()
             .table("sessions")
-            .select("*, classes(name, code), attendance(status, note)")
+            .select("*, classes(name, code)")
             .in_("class_id", class_ids)
             .order("created_at", desc=True)
             .execute()
         )
     rows = []
     for r in resp.data or []:
+        r = _sync_session_state(r)
         flat = {**r}
         if isinstance(r.get("classes"), dict):
             flat["class_name"] = r["classes"]["name"]
@@ -462,14 +604,41 @@ def create_session(
     require_teacher(user)
     cls = _get_class_or_404(body.class_id)
     _assert_class_access(cls, user)
-    now = utc_now()
+    now_dt = datetime.now(timezone.utc)
+    if body.opens_at is not None and body.opens_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="opens_at must include a timezone offset")
+    if body.deadline_at is not None and body.deadline_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="deadline_at must include a timezone offset")
+    opens_at = body.opens_at.astimezone(timezone.utc) if body.opens_at else now_dt
+    deadline_at = body.deadline_at.astimezone(timezone.utc) if body.deadline_at else now_dt + timedelta(minutes=10)
+    if opens_at >= deadline_at:
+        raise HTTPException(status_code=422, detail="The deadline must be later than the opening time")
+    if deadline_at <= now_dt:
+        raise HTTPException(status_code=422, detail="The deadline must be in the future")
+    stage_region = body.stage_region
+    if stage_region is not None:
+        try:
+            x, y = float(stage_region["x"]), float(stage_region["y"])
+            width, height = float(stage_region["width"]), float(stage_region["height"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="stage_region must contain normalized x, y, width, and height values")
+        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+            raise HTTPException(status_code=422, detail="stage_region coordinates must form a non-empty rectangle within 0–1")
+        stage_region = {"x": x, "y": y, "width": width, "height": height}
+    now = now_dt.isoformat(timespec="seconds")
+    session_status = "scheduled" if now_dt < opens_at else "open"
     sess_resp = (
         supa()
         .table("sessions")
         .insert(
             {
                 "class_id": body.class_id,
-                "status": "open",
+                "title": body.title.strip(),
+                "status": session_status,
+                "opens_at": opens_at.isoformat(timespec="seconds"),
+                "deadline_at": deadline_at.isoformat(timespec="seconds"),
+                "stage_region": stage_region,
+                "minimum_people_visible": body.minimum_people_visible,
                 "created_by": user["id"],
                 "created_at": now,
             }
@@ -495,7 +664,7 @@ def create_session(
     if att_rows:
         supa().table("attendance").insert(att_rows).execute()
 
-    _audit(session_id, user["id"], "session.created", metadata={"class_id": body.class_id})
+    _audit(session_id, user["id"], "session.created", metadata={"class_id": body.class_id, "opens_at": opens_at.isoformat(), "deadline_at": deadline_at.isoformat()})
     row = _get_session_or_404(session_id)
     payload = _session_payload(row, user)
 
@@ -520,11 +689,28 @@ async def capture(
     photo: UploadFile = File(...),
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    require_teacher(user)
+    raise HTTPException(
+        status_code=410,
+        detail="The legacy synthetic capture endpoint is disabled. Students submit their own classroom photo through /api/sessions/{session_id}/submissions.",
+    )
+
+
+@app.post("/api/sessions/{session_id}/submissions")
+async def submit_classroom_image(
+    session_id: str,
+    photo: UploadFile = File(...),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Student role required")
     row = _get_session_or_404(session_id)
-    _assert_session_access(row, user, teacher_only=True)
+    _assert_session_access(row, user)
+    if row["status"] == "scheduled":
+        raise HTTPException(status_code=409, detail=f"Attendance opens at {row.get('opens_at')}")
     if row["status"] != "open":
-        raise HTTPException(status_code=409, detail="Only open sessions accept captures")
+        raise HTTPException(status_code=409, detail="The attendance deadline has passed or the session is closed")
+    if photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP classroom image")
 
     data = bytearray()
     while True:
@@ -533,62 +719,197 @@ async def capture(
             break
         data.extend(chunk)
         if len(data) > MAX_CAPTURE_BYTES:
-            raise HTTPException(status_code=413, detail=f"Capture exceeds {MAX_CAPTURE_BYTES} bytes")
+            raise HTTPException(status_code=413, detail=f"Image exceeds {MAX_CAPTURE_BYTES} bytes")
     if not data:
-        raise HTTPException(status_code=400, detail="Capture photo is empty")
+        raise HTTPException(status_code=400, detail="The uploaded image is empty")
 
-    roster = (
-        supa()
-        .table("enrollments")
-        .select("student_id, profiles!enrollments_student_id_fkey(name)")
-        .eq("class_id", row["class_id"])
-        .execute()
+    from .vision import analyze_classroom_image, strip_image_metadata
+
+    analysis = await asyncio.to_thread(
+        analyze_classroom_image,
+        bytes(data),
+        stage_region=row.get("stage_region"),
+        minimum_people=int(row.get("minimum_people_visible") or ATTENDANCE_MIN_VISIBLE_PEOPLE),
     )
-    audit_count_resp = (
-        supa()
-        .table("audit_log")
-        .select("id", count="exact")
-        .eq("session_id", session_id)
-        .eq("action", "capture.received")
-        .execute()
+    previous_resp = (
+        supa().table("image_submissions").select("id, status, storage_path, attempt_number")
+        .eq("session_id", session_id).eq("student_id", user["id"]).execute()
     )
-    capture_number = (audit_count_resp.count or 0) + 1
+    previous = (previous_resp.data or [None])[0]
+    if previous and previous.get("status") != "REJECTED":
+        raise HTTPException(status_code=409, detail="A submission already exists for this attendance session")
+
+    image_format = analysis.get("quality", {}).get("format")
+    extension = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}.get(image_format)
+    stored_data = strip_image_metadata(bytes(data)) if extension else None
+    if stored_data is not None and len(stored_data) > MAX_CAPTURE_BYTES:
+        raise HTTPException(status_code=413, detail="Metadata-free image exceeds the configured storage limit")
+    image_path = None
+    if extension:
+        image_path = f"{session_id}/{user['id']}/{uuid.uuid4().hex}.{extension}"
+        try:
+            supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).upload(
+                image_path,
+                stored_data,
+                {"content-type": {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image_format], "upsert": "false"},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Secure image storage is unavailable; attendance was not marked present") from exc
+
     now = utc_now()
-    suggestions = []
-    sugg_rows = []
-    for index, entry in enumerate(roster.data or []):
-        student_id = entry["student_id"]
-        prof = entry.get("profiles!enrollments_student_id_fkey") or entry.get("profiles")
-        name = prof.get("name", "Student") if isinstance(prof, dict) else "Student"
-        confidence = round(min(0.98, 0.70 + ((len(data) + capture_number * 17 + index * 11) % 25) / 100), 2)
-        sugg_rows.append(
-            {
-                "session_id": session_id,
-                "student_id": student_id,
-                "confidence": confidence,
-                "label": "simulated",
-                "created_at": now,
-            }
-        )
-        suggestions.append(
-            {"student_id": student_id, "name": name, "confidence": confidence, "status": "suggestion", "label": "simulated"}
-        )
-    if sugg_rows:
-        supa().table("suggestions").insert(sugg_rows).execute()
-
-    _audit(session_id, user["id"], "capture.received",
-           note="Capture processed for synthetic suggestions; not persisted by application.",
-           metadata={"bytes_read": len(data)})
-    _audit(session_id, user["id"], "suggestion.generated",
-           note="Synthetic suggestions; teacher review required.",
-           metadata={"count": len(suggestions), "synthetic": True})
-
-    return {
+    attempt_number = int(previous.get("attempt_number", 0)) + 1 if previous else 1
+    submission_data = {
         "session_id": session_id,
-        "simulated": True,
-        "message": "Synthetic suggestions only. Review and save attendance manually; no image was stored.",
-        "suggestions": suggestions,
+        "student_id": user["id"],
+        "attempt_number": attempt_number,
+        "submitted_at": now,
+        "status": analysis["status"],
+        "explanation": analysis["explanation"],
+        "quality_result": analysis["quality"],
+        "detected_people": analysis.get("detected_people"),
+        "nearby_people": analysis.get("nearby_people"),
+        "stage_person_detected": analysis.get("stage_person_detected"),
+        "analysis_json": analysis,
+        "storage_path": image_path,
+        "image_sha256": hashlib.sha256(stored_data if stored_data is not None else bytes(data)).hexdigest(),
+        "review_decision": None,
+        "review_reason": None,
+        "reviewed_by": None,
+        "reviewed_at": None,
     }
+    try:
+        if previous:
+            saved = (
+                supa().table("image_submissions").update(submission_data)
+                .eq("id", previous["id"]).eq("status", "REJECTED").select("*").execute()
+            )
+            if not saved.data:
+                raise HTTPException(status_code=409, detail="A submission was received concurrently; refresh and review its status")
+            submission = saved.data[0]
+            old_path = previous.get("storage_path")
+            if old_path:
+                try:
+                    supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).remove([old_path])
+                except Exception:
+                    pass
+        else:
+            saved = supa().table("image_submissions").insert(submission_data).execute()
+            submission = saved.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if image_path:
+            try:
+                supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).remove([image_path])
+            except Exception:
+                pass
+        raise HTTPException(status_code=409, detail="A submission already exists or could not be recorded") from exc
+
+    attendance_values = {
+        "verification_status": analysis["status"],
+        "verification_source": "automatic" if analysis["status"] == "VERIFIED" else None,
+        "updated_by": user["id"],
+        "updated_at": now,
+        "note": analysis["explanation"],
+    }
+    if analysis["status"] == "VERIFIED":
+        attendance_values["status"] = "present"
+        attendance_values["verification_source"] = "automatic"
+    supa().table("attendance").update(attendance_values).eq("session_id", session_id).eq("student_id", user["id"]).execute()
+    _audit(session_id, user["id"], "image.submitted", note=analysis["explanation"], metadata={"submission_id": submission["id"], "verification_status": analysis["status"], "attempt_number": attempt_number})
+    publish_event(event_payload("submission.created", {"session_id": session_id, "submission_id": submission["id"], "status": analysis["status"]}), [user["id"], row.get("teacher_id", "")])
+    return {"id": submission["id"], "session_id": session_id, "status": analysis["status"], "submitted_at": now, "explanation": analysis["explanation"], "quality": analysis["quality"], "detected_people": analysis.get("detected_people"), "nearby_people": analysis.get("nearby_people"), "stage_person_detected": analysis.get("stage_person_detected"), "attempt_number": attempt_number}
+
+
+@app.get("/api/sessions/{session_id}/submissions")
+def list_submissions(session_id: str, user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    require_teacher(user)
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user, teacher_only=True)
+    response = (
+        supa().table("image_submissions")
+        .select("*, profiles!image_submissions_student_id_fkey(name, email, registration_id)")
+        .eq("session_id", session_id).order("submitted_at", desc=True).execute()
+    )
+    output = []
+    for item in response.data or []:
+        entry = {**item}
+        profile = entry.pop("profiles!image_submissions_student_id_fkey", None) or entry.pop("profiles", None)
+        if isinstance(profile, dict):
+            entry["student_name"] = profile.get("name")
+            entry["student_email"] = profile.get("email")
+            entry["student_id"] = profile.get("registration_id") or item.get("student_id")
+        storage_path = entry.get("storage_path")
+        entry["image_url"] = None
+        if storage_path:
+            try:
+                signed = supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).create_signed_url(storage_path, 600)
+                entry["image_url"] = signed.get("signedURL") or signed.get("signedUrl")
+            except Exception:
+                entry["image_url"] = None
+        output.append(entry)
+    return output
+
+
+@app.post("/api/sessions/{session_id}/submissions/{submission_id}/review")
+def review_submission(
+    session_id: str,
+    submission_id: str,
+    body: SubmissionReviewRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    require_teacher(user)
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user, teacher_only=True)
+    if row["status"] == "finalized":
+        raise HTTPException(status_code=409, detail="Finalized sessions cannot be changed")
+    found = (
+        supa().table("image_submissions").select("*")
+        .eq("id", submission_id).eq("session_id", session_id).single().execute()
+    )
+    if not found.data:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    submission = found.data
+    decision = body.decision.upper()
+    now = utc_now()
+    supa().table("image_submissions").update({"review_decision": decision, "review_reason": body.reason.strip(), "reviewed_by": user["id"], "reviewed_at": now}).eq("id", submission_id).execute()
+    attendance_status = "present" if decision == "APPROVE" else "pending"
+    verification_status = "MANUALLY_APPROVED" if decision == "APPROVE" else "MANUALLY_REJECTED"
+    supa().table("attendance").update({"status": attendance_status, "verification_status": verification_status, "verification_source": "manual", "note": body.reason.strip(), "updated_by": user["id"], "updated_at": now}).eq("session_id", session_id).eq("student_id", submission["student_id"]).execute()
+    _audit(session_id, user["id"], "submission.reviewed", note=body.reason.strip(), metadata={"submission_id": submission_id, "decision": decision})
+    publish_event(event_payload("attendance.changed", {"session_id": session_id, "student_id": submission["student_id"], "verification_status": verification_status}), [user["id"], submission["student_id"]])
+    return {"submission_id": submission_id, "decision": decision, "verification_status": verification_status, "attendance_status": attendance_status, "reviewed_at": now}
+
+
+@app.post("/api/sessions/{session_id}/open")
+def open_session(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    require_teacher(user)
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user, teacher_only=True)
+    if row["status"] != "scheduled":
+        raise HTTPException(status_code=409, detail="Only a scheduled session can be opened early")
+    deadline_at = _parse_datetime(row.get("deadline_at"))
+    if deadline_at is None or deadline_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="The session deadline has passed")
+    now = utc_now()
+    supa().table("sessions").update({"status": "open", "opens_at": now}).eq("id", session_id).execute()
+    _audit(session_id, user["id"], "session.opened_early", note="Professor opened the scheduled attendance window early.")
+    return {"session_id": session_id, "status": "open", "opens_at": now, "deadline_at": row.get("deadline_at")}
+
+
+@app.post("/api/sessions/{session_id}/close")
+def close_session(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    require_teacher(user)
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user, teacher_only=True)
+    if row["status"] == "finalized":
+        raise HTTPException(status_code=409, detail="Session is already finalized")
+    if row["status"] == "closed":
+        return {"session_id": session_id, "status": "closed", "closed_at": row.get("closed_at")}
+    now = utc_now()
+    supa().table("sessions").update({"status": "closed", "closed_at": now}).eq("id", session_id).execute()
+    _audit(session_id, user["id"], "session.closed", note="Professor closed the attendance window.")
+    return {"session_id": session_id, "status": "closed", "closed_at": now}
 
 
 @app.patch("/api/sessions/{session_id}/attendance/{student_id}")
@@ -601,7 +922,7 @@ def update_attendance(
     require_teacher(user)
     row = _get_session_or_404(session_id)
     _assert_session_access(row, user, teacher_only=True)
-    if row["status"] != "open":
+    if row["status"] in {"scheduled", "finalized"}:
         raise HTTPException(status_code=409, detail="Finalized sessions cannot be changed")
 
     enr = (
@@ -616,8 +937,9 @@ def update_attendance(
         raise HTTPException(status_code=404, detail="Student is not enrolled in this class")
 
     now = utc_now()
+    verification_status = "MANUALLY_APPROVED" if body.status == "present" else "MANUALLY_REJECTED" if body.status == "absent" else "NEEDS_REVIEW"
     supa().table("attendance").update(
-        {"status": body.status, "note": body.note, "updated_by": user["id"], "updated_at": now}
+        {"status": body.status, "verification_status": verification_status, "verification_source": "manual", "note": body.note, "updated_by": user["id"], "updated_at": now}
     ).eq("session_id", session_id).eq("student_id", student_id).execute()
 
     _audit(session_id, user["id"], "attendance.changed",
@@ -657,8 +979,8 @@ def finalize(
 
     row = _get_session_or_404(session_id)
     _assert_session_access(row, user, teacher_only=True)
-    if row["status"] != "open":
-        raise HTTPException(status_code=409, detail="Session is already finalized")
+    if row["status"] != "closed":
+        raise HTTPException(status_code=409, detail="Close the attendance window before finalizing the session")
 
     now = utc_now()
     pending_resp = (
@@ -775,7 +1097,7 @@ def report(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dic
     entries_resp = (
         supa()
         .table("attendance")
-        .select("status, note, updated_at, profiles!attendance_student_id_fkey(name, email)")
+        .select("student_id, status, note, updated_at, verification_status, verification_source, profiles!attendance_student_id_fkey(name, email, registration_id)")
         .eq("session_id", session_id)
         .order("profiles!attendance_student_id_fkey(name)")
         .execute()
@@ -787,13 +1109,37 @@ def report(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dic
         if isinstance(prof, dict):
             flat["name"] = prof["name"]
             flat["email"] = prof["email"]
+            flat["registration_id"] = prof.get("registration_id")
         entries.append(flat)
+
+    submission_resp = (
+        supa().table("image_submissions")
+        .select("student_id, submitted_at, status, review_decision")
+        .eq("session_id", session_id).execute()
+    )
+    submission_by_student = {item["student_id"]: item for item in (submission_resp.data or [])}
+    for entry in entries:
+        submission = submission_by_student.get(entry["student_id"], {})
+        entry["student_code"] = entry.pop("registration_id", None) or entry["student_id"]
+        entry["submission_time"] = submission.get("submitted_at")
+        entry["verification_status"] = entry.get("verification_status") or submission.get("status") or "NOT_SUBMITTED"
+        entry["review_decision"] = submission.get("review_decision")
+
+    summary = {
+        "total_enrolled": len(entries),
+        "automatically_verified_present": sum(1 for e in entries if e.get("verification_source") == "automatic" and e["status"] == "present"),
+        "manually_approved_present": sum(1 for e in entries if e.get("verification_status") == "MANUALLY_APPROVED" and e["status"] == "present"),
+        "rejected_submissions": sum(1 for s in submission_by_student.values() if s.get("status") == "REJECTED" or s.get("review_decision") == "REJECT"),
+        "awaiting_review": sum(1 for s in submission_by_student.values() if s.get("status") == "NEEDS_REVIEW" and not s.get("review_decision")),
+        "did_not_submit": max(0, len(entries) - len(submission_by_student)),
+        "final_absent": sum(1 for e in entries if e["status"] == "absent"),
+    }
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["student_name", "student_email", "status", "note", "updated_at"])
+    writer.writerow(["student_id", "student_name", "student_email", "submission_time", "verification_status", "review_decision", "final_attendance_status", "note", "updated_at"])
     for e in entries:
-        writer.writerow([e.get("name", ""), e.get("email", ""), e["status"], e.get("note") or "", e["updated_at"]])
+        writer.writerow([e.get("student_code", ""), e.get("name", ""), e.get("email", ""), e.get("submission_time") or "", e.get("verification_status", ""), e.get("review_decision") or "", e["status"], e.get("note") or "", e["updated_at"]])
     csv_data = output.getvalue()
 
     pdf_html = (
@@ -815,13 +1161,17 @@ def report(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dic
         "session": {
             "id": row["id"],
             "class_id": row["class_id"],
+            "title": row.get("title", "Attendance session"),
             "class_name": row.get("class_name", ""),
             "class_code": row.get("class_code", ""),
             "status": row["status"],
             "created_at": row["created_at"],
+            "opens_at": row.get("opens_at"),
+            "deadline_at": row.get("deadline_at"),
             "finalized_at": row.get("finalized_at"),
         },
         "rows": entries,
+        "summary": summary,
         "csv": csv_data,
         "pdf": pdf_html,
         "pdf_html": pdf_html,

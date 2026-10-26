@@ -1,36 +1,65 @@
-# Classroom Attendance prototype
+# Smart Classroom Attendance
 
-A review-first classroom attendance prototype with a Flutter mobile client, responsive web dashboard, and one shared real-time API. Build order follows the request: mobile app, web dashboard, then live connection through a shared FastAPI service and WebSocket event stream.
-
-## Safety scope
-
-This is a demo using synthetic students and simulated recognition suggestions. It does **not** perform facial identity recognition. Capture bytes are processed for the request and not persisted in application storage; multipart parsing may use temporary spooling for large uploads. No biometric templates are generated or exposed. Teacher review is required before a record becomes present/absent. Manual roll call is available. Notifications appear in the app only; there is no email or SMS sender. Do not enter real student data or use this prototype in a live school setting.
+A shared Flutter mobile app and React dashboard backed by a FastAPI service and Supabase Auth/Postgres/Storage. Students submit a classroom image during a server-timed attendance window. The backend checks image quality and classroom-scene evidence with a pretrained person detector; it does **not** identify people or compare faces. A passing scene check can mark the authenticated submitter present, while uncertain evidence remains pending for a professor to review. Manual roster correction and explicit session finalization remain available.
 
 ## Components
 
-- `apps/mobile/` — Flutter app for teacher/student use, with Android/iOS/Web scaffolding. Flutter 3.47.7 was installed at `/home/ubuntu/tools/flutter` in this sandbox with user approval; the Android SDK is not installed, so an Android APK/device-camera build was not verified.
-- `apps/dashboard/` — React/TypeScript responsive dashboard.
-- `backend/` — FastAPI REST + WebSocket service with SQLite demo persistence and role checks.
-- `docs/API_CONTRACT.md` — shared endpoint and event details.
-- `plan.md`, `TODO.md` — agreed scope and implementation status.
+- `apps/mobile/` — Flutter student/professor workflows, timed attendance, mobile image capture, personal history, in-app notifications, and WebSocket refresh.
+- `apps/dashboard/` — React/TypeScript dashboard for timed session scheduling, student panorama upload, professor image review/manual decisions, audit, history, and CSV/printable reports.
+- `backend/` — FastAPI service source for Supabase Auth token verification, database-backed records, private Storage uploads, image verification, retention cleanup, audit, and short-lived WebSocket tickets.
+- `backend/supabase_schema.sql` — complete fresh-project schema and attendance upgrade.
+- `backend/migrations/20261026_smart_attendance.sql` — upgrade for an existing database created from the earlier schema.
+- `docs/` — API, privacy, setup, and validation notes.
 
-## Run locally
+## Hosted backend
 
-1. Start the API from `backend/`: create a Python virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, then run `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
-2. Start the dashboard: `cd apps/dashboard && npm install && VITE_API_BASE_URL=http://localhost:8000/api npm run dev`. Use the API's browser-reachable address instead of `localhost` if the dashboard and API run on different machines.
-3. Open the Vite URL in a browser and sign in using the demo credentials listed in `docs/API_CONTRACT.md`.
-4. For Flutter, run `cd apps/mobile && flutter pub get && flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000/api` for Android Emulator. For a physical phone, use the host computer's LAN IP and ensure it can reach port 8000. iOS Simulator can use `http://localhost:8000/api`.
+The web and mobile clients default to the deployed Render API at **`https://sdtt-attendance-system.onrender.com/api`**. A read-only health check is available at [`/api/health`](https://sdtt-attendance-system.onrender.com/api/health). Normal client use does not require starting the backend locally.
 
-Keep the backend, dashboard, and Flutter app pointed at the same API address to share changes in real time. Android emulator, iOS simulator, and physical-device networking may require different base URLs.
+To use a different API, set `VITE_API_BASE_URL` for a dashboard build or pass `--dart-define=API_BASE_URL=https://your-api.example.com/api` to Flutter. Keep backend credentials out of frontend configuration. The deployment must allow requests from the frontend's origin in its CORS settings.
 
-## Verification in this sandbox
+## Client setup
 
-Flutter static analysis and widget smoke tests pass, and `flutter build web` succeeds. Backend tests pass (4 tests), including role/privacy and single-use realtime ticket behavior. The dashboard TypeScript/Vite production build succeeds. Flutter APK/device camera behavior is not verified because this sandbox has no Android SDK or attached mobile device; native iOS builds require macOS/Xcode.
+For local dashboard development while using the hosted API:
 
-## Demo credentials
+```bash
+cd apps/dashboard
+npm ci
+npm run dev
+```
 
-Teacher: `teacher@demo.edu` / `teach123`.
+For Flutter, in an environment with Flutter installed:
 
-Students: `student1@demo.edu` or `student2@demo.edu` / `student123`.
+```bash
+cd apps/mobile
+flutter pub get
+flutter run
+```
 
-These credentials, SQLite storage, local WebSocket tickets, and demo CORS configuration are development-only. Production requires real authentication, HTTPS/WSS, encrypted storage, proper retention and deletion, backup/monitoring, access control review, school-specific legal/privacy review, demographic fairness assessment, and a configured app-push provider if true push delivery is required. The requested accuracy/latency figures are evaluation goals, not performance claims.
+The clients use the hosted API unless you provide an explicit override.
+
+## Optional backend development or self-hosting
+
+The `backend/` source remains in the repository for maintaining, testing, and deploying the service; it is not the default client target. To run your own backend, create a Supabase project. For a fresh database, run `backend/supabase_schema.sql` in SQL Editor. For a project using the earlier schema, run that original schema first and then `backend/migrations/20261026_smart_attendance.sql`.
+
+In `backend/`, create a virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, and set the Supabase URL, anon key, service-role key, JWT secret, allowed CORS origins, and image policy values. Never expose the service-role key or JWT secret in a client build or commit a real `.env` file. Provision Auth users and administrator-controlled `profiles` roles/enrollments. The guarded synthetic-account helper is development-only and reads passwords from environment variables.
+
+Run the local API only when doing backend development or self-hosting:
+
+```bash
+cd backend
+uvicorn app.main:app --env-file .env --host 0.0.0.0 --port 8000
+```
+
+For a local client-to-local API test, explicitly override the default URL with `http://localhost:8000/api` for the web client or a device-reachable address for Flutter.
+
+## Attendance workflow
+
+A professor creates a session with an opening time and duration, minimum visible-person threshold, and optional normalized stage region. The server, not the device clock, transitions it from scheduled to open and then closed. Students use their own registered ID/email account, capture a broad classroom panorama with the phone's camera app, and upload the saved image. The API enforces file type/size and image-quality requirements, and returns a scene-evidence result. `VERIFIED` is a scene-level result, not proof that the uploader's identity appears in the image. `NEEDS_REVIEW` and `REJECTED` are not treated as present; professors can inspect a signed, short-lived private image URL and make an audited decision. Rejected students may retry only when policy allows and no professor decision has been recorded. After closing the window, a professor can correct the roster and explicitly finalize; remaining pending students become absent.
+
+## Privacy and limits
+
+Images are re-encoded without embedded metadata, held in a private Supabase Storage bucket for review, and deleted by the backend retention worker after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30; allowed range 1–3650). Submission metadata and attendance records remain after image deletion. No facial recognition, biometric embeddings, identity matching, email/SMS sender, or push provider is included. Notifications are in-app only. The person detector's scene evidence is fallible; manual attendance remains available. This is a prototype, not a certification of education/privacy law compliance or a production-ready school system. Before a real pilot, review consent/notice, opt-out/manual pathways, model and dependency licensing, security, image retention, fairness/accuracy, and institutional requirements.
+
+## Validation
+
+Current reproducible checks include `python -m pytest -q` under `backend/` and `npm run build` under `apps/dashboard/`. Flutter checks require the Flutter SDK: `flutter analyze`, `flutter test`, and optionally `flutter build web`. Android device camera behavior and iOS native builds require the relevant SDK/device and are not claimed unless tested. See [`docs/BUILD_VALIDATION.md`](docs/BUILD_VALIDATION.md) for the latest environment-specific results.

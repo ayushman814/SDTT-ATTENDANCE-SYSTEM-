@@ -19,6 +19,7 @@ class AppState extends ChangeNotifier {
   StudentAttendance? studentAttendance;
   AttendanceSession? activeSession;
   List<Suggestion> suggestions = [];
+  Map<String, dynamic>? latestSubmission;
   bool busy = false;
   String? error;
   String? liveMessage;
@@ -27,12 +28,18 @@ class AppState extends ChangeNotifier {
   bool get isTeacher => user?.isTeacher == true;
   int get unreadCount => notifications.where((n) => !n.read).length;
 
-  Future<bool> login(String email, String password) async {
+  Future<bool> login(String identifier, String password, {String? expectedRole}) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
-      auth = await api.login(email.trim(), password);
+      final authenticated = await api.login(identifier.trim(), password);
+      if (expectedRole != null && authenticated.user.role != expectedRole) {
+        api.accessToken = null;
+        error = 'This account is registered as ${authenticated.user.role}; choose the matching sign-in role.';
+        return false;
+      }
+      auth = authenticated;
       await loadHome();
       _startRealtime();
       return true;
@@ -96,7 +103,7 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  Future<void> openSession(int sessionId) async {
+  Future<void> openSession(String sessionId) async {
     busy = true;
     error = null;
     notifyListeners();
@@ -110,12 +117,22 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<bool> startSession(int classId) async {
+  Future<bool> startSession(String classId,
+      {String? title, DateTime? opensAt, Duration? duration,
+      Map<String, double>? stageRegion, int minimumPeopleVisible = 2}) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
-      activeSession = await api.createSession(classId);
+      final start = opensAt ?? DateTime.now();
+      activeSession = await api.createSession(
+        classId,
+        title: title,
+        opensAt: start,
+        deadlineAt: start.add(duration ?? const Duration(minutes: 10)),
+        stageRegion: stageRegion,
+        minimumPeopleVisible: minimumPeopleVisible,
+      );
       sessions = await api.sessions();
       return true;
     } on ApiException catch (e) {
@@ -128,12 +145,21 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> uploadCapture(File file) async {
-    if (activeSession == null) return false;
+    error = 'Professor capture is disabled. Students submit their own classroom image through a timed session.';
+    notifyListeners();
+    return false;
+  }
+
+  Future<bool> submitStudentImage(String sessionId, File file,
+      {void Function(double progress)? onProgress}) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
-      suggestions = await api.capture(activeSession!.id, file);
+      latestSubmission = await api.submitPhoto(sessionId, file, onProgress: onProgress);
+      studentAttendance = await api.studentAttendance();
+      activeSession = await api.session(sessionId);
+      sessions = await api.sessions();
       return true;
     } on ApiException catch (e) {
       error = e.message;
@@ -144,7 +170,38 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<bool> setAttendance(int studentId, String status) async {
+  Future<List<Map<String, dynamic>>> loadSubmissions(String sessionId) =>
+      api.submissions(sessionId);
+
+  Future<bool> reviewSubmission(String sessionId, String submissionId,
+      String decision, String reason) async {
+    try {
+      await api.reviewSubmission(sessionId, submissionId, decision, reason);
+      activeSession = await api.session(sessionId);
+      notifyListeners();
+      return true;
+    } on ApiException catch (e) {
+      error = e.message;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> openAttendanceWindow(String sessionId) async {
+    await api.openSession(sessionId);
+    activeSession = await api.session(sessionId);
+    sessions = await api.sessions();
+    notifyListeners();
+  }
+
+  Future<void> closeAttendanceWindow(String sessionId) async {
+    await api.closeSession(sessionId);
+    activeSession = await api.session(sessionId);
+    sessions = await api.sessions();
+    notifyListeners();
+  }
+
+  Future<bool> setAttendance(String studentId, String status) async {
     if (activeSession == null) return false;
     try {
       await api.updateAttendance(activeSession!.id, studentId, status);
