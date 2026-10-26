@@ -28,7 +28,7 @@ The app also embeds the student side of the **panorama attendance** system (`app
 - Student sign-in uses the panorama API (`POST /api/auth/login`, role `student`), then lists live attendance windows (`GET /api/student/sessions/active`) and per-course history (`GET /api/student/history`).
 - "Mark attendance" runs the same guided live capture as the web app: the front camera films the student for 8s, the app switches to the back camera, and the student sweeps ~180° across the lecturer on the podium and the class. Frames sampled every ~600ms (4 minimum, ~16s) are uploaded with the selfie to `POST /api/sessions/{id}/submit`; the server stitches them into the panorama and runs the full verification pipeline. There is no manual upload path.
 - Backend URL: `--dart-define=PANORAMA_API_URL=http://<host>:8100/api` (default `http://localhost:8100/api`; use `10.0.2.2` on the Android emulator).
-- Requires the `camera` plugin; `CAMERA` permission is declared in `android/app/src/main/AndroidManifest.xml` and `NSCameraUsageDescription` already exists in `ios/Runner/Info.plist`. Panorama demo students: `student1..5@demo.edu` / `student123` (after `python seed.py` in `apps/panorama/api`).
+- Requires the `camera` plugin; `CAMERA` permission is declared in `android/app/src/main/AndroidManifest.xml` and `NSCameraUsageDescription` already exists in `ios/Runner/Info.plist`. Panorama demo students: `student1..5@demo.edu` — passwords are printed by `python seed.py` (random per run unless `PANORAMA_SEED_STUDENT_PASSWORD` is set).
 
 ## Product behavior
 

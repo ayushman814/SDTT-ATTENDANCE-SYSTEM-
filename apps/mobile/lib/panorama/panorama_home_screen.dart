@@ -113,8 +113,8 @@ class _PanoramaHomeScreenState extends State<PanoramaHomeScreen> {
                 ?.copyWith(fontWeight: FontWeight.w900)),
         const SizedBox(height: 6),
         const Text(
-          'Student account from the panorama system '
-          '(e.g. student1@demo.edu / student123).',
+          'Student account from the panorama system — use the credentials '
+          'printed by `python seed.py` in apps/panorama/api.',
           style: TextStyle(color: AppColors.slate, fontSize: 13),
         ),
         const SizedBox(height: 24),

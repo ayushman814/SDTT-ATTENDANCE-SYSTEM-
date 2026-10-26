@@ -62,3 +62,31 @@ def test_if_empty_skips_external_database_url():
     result = run_seed("postgresql+psycopg2://u:p@127.0.0.1:1/db", "--if-empty")
     assert result.returncode == 0, result.stderr
     assert "external database" in result.stdout
+
+
+def test_if_empty_skips_external_url_from_dotenv():
+    # The launcher path: URL configured ONLY in .env (app.config loads it),
+    # not exported in the environment — seeding must still be skipped.
+    dotenv = ROOT / ".env"
+    backup = dotenv.read_text() if dotenv.exists() else None
+    dotenv.write_text(
+        "PANORAMA_DATABASE_URL=postgresql+psycopg2://u:p@127.0.0.1:1/db\n"
+    )
+    env = dict(os.environ)
+    env.pop("PANORAMA_DATABASE_URL", None)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SEED), "--if-empty"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+            timeout=120,
+        )
+    finally:
+        if backup is None:
+            dotenv.unlink(missing_ok=True)
+        else:
+            dotenv.write_text(backup)
+    assert result.returncode == 0, result.stderr
+    assert "external database" in result.stdout
