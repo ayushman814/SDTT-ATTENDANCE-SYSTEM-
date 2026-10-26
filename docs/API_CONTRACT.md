@@ -7,7 +7,7 @@ Base path: `/api`. JSON is UTF-8. Authenticated HTTP routes use `Authorization: 
 - `POST /auth/login` accepts `{ "identifier": "registration-id-or-email", "password": "..." }`; legacy `email` input is accepted. It returns `{access_token, token_type, user:{id,name,email,role,registration_id}}`.
 - `GET /me` returns the authenticated provisioned profile.
 - `POST /auth/ws-ticket` returns a short-lived, single-use `{ticket}`. The ticket—not the bearer token—is used for WebSocket connection.
-- Roles are `teacher` and `student`. Student routes are scoped to the authenticated student's own profile and class enrollments.
+- Roles are `controller`, `teacher`, and `student`. Student routes are scoped to the authenticated student's own profile and class enrollments.
 
 ## Classes and timed sessions
 
@@ -19,6 +19,13 @@ Base path: `/api`. JSON is UTF-8. Authenticated HTTP routes use `Authorization: 
 - `POST /sessions/{session_id}/open` allows a professor to open a scheduled session early while preserving its deadline.
 - `POST /sessions/{session_id}/close` closes a scheduled/open window; repeated close is idempotent. Server-side state checks prevent submissions after the deadline.
 - `POST /sessions/{session_id}/capture` is retired and returns HTTP 410; no synthetic suggestions are generated.
+
+## Enrollment and live verification
+
+- `GET /registration` returns the controller-controlled registration window and the authenticated student's enrollment state.
+- `POST /registration/open` and `POST /registration/close` are controller-only and audited.
+- `POST /students/me/face-enrollment` accepts one front-camera image only while registration is open. The API detects a single face, derives an approved embedding, encrypts it with a server-only key, and does not store the source image. Duplicate enrollment is rejected.
+- `POST /sessions/{session_id}/verification` accepts repeated `face_frames` and one `classroom` image. It evaluates identity, liveness, and classroom context separately. Liveness requires observed movement and an eye-state transition; a heuristic result is not a guarantee of spoof prevention. The response uses `CONFIRMED`, `PENDING_REVIEW`, or `REJECTED` and includes reasons for every non-passing category.
 
 ## Student scene-evidence submission
 
@@ -36,6 +43,7 @@ Base path: `/api`. JSON is UTF-8. Authenticated HTTP routes use `Authorization: 
 - `POST /sessions/{session_id}/finalize` accepts `{mark_pending_absent:true}` and only succeeds after closing. Remaining pending students become absent; an audit record and private in-app notifications are written for enrolled students.
 - `GET /students/me/attendance` returns only the student's records and summary (`present`, `absent`, `pending`, `total_finalized`, nullable `percentage`).
 - `GET /reports/sessions/{session_id}` is professor-only and returns session metadata, rows, summary counts, CSV text, and print-friendly `pdf_html` (the API does not itself render a PDF).
+- `GET /reports/sessions/{session_id}/xlsx` is professor-only and returns a real workbook with Executive Summary, Session Attendance, Student-wise Attendance, Verification Review, and Corrections and Audit History worksheets.
 - `GET /audit?session_id=<uuid>` is professor-only. `GET /notifications` and `POST /notifications/{notification_id}/read` are scoped to the current user.
 
 ## Realtime events
@@ -44,4 +52,4 @@ After `POST /auth/ws-ticket`, connect to `/ws?ticket=<ticket>` over WebSocket (`
 
 ## Privacy and limits
 
-No facial identity recognition, face embeddings, email/SMS sender, or push adapter is included. Image analysis is scene evidence only and can be wrong; keep manual attendance available. The current detector/model is a prototype component, not a verified accuracy claim. Review notice/consent, retention, model licensing, access controls, security, fairness, and jurisdiction-specific requirements before handling real student records or photos.
+Face embeddings are encrypted at rest and never returned to clients. DeepFace/OpenCV/YOLO model availability is a deployment requirement. Identity thresholds and liveness heuristics require local validation and are not accuracy or anti-spoofing claims. Classroom similarity is contextual evidence and cannot prove a student's exact seat. Review notice/consent, retention, model licensing, access controls, security, fairness, and jurisdiction-specific requirements before handling real student records or photos.

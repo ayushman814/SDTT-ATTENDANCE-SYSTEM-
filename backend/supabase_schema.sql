@@ -20,7 +20,10 @@ create table if not exists public.profiles (
   id       uuid primary key references auth.users(id) on delete cascade,
   name     text        not null,
   email    text        not null unique,
-  role     text        not null check (role in ('teacher', 'student')),
+  role     text        not null check (role in ('controller', 'teacher', 'student')),
+  registration_id text unique,
+  face_embedding_encrypted text,
+  face_enrolled_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -29,6 +32,8 @@ create table if not exists public.classes (
   id         uuid primary key default uuid_generate_v4(),
   name       text not null,
   code       text not null unique,
+  section    text not null default '',
+  room_number text not null default '',
   teacher_id uuid not null references public.profiles(id),
   created_at timestamptz not null default now()
 );
@@ -87,7 +92,7 @@ create table if not exists public.suggestions (
 -- audit_log
 create table if not exists public.audit_log (
   id            uuid primary key default uuid_generate_v4(),
-  session_id    uuid not null references public.sessions(id) on delete cascade,
+  session_id    uuid references public.sessions(id) on delete cascade,
   action        text not null,
   actor_id      uuid not null references public.profiles(id),
   timestamp     timestamptz not null default now(),
@@ -321,6 +326,35 @@ create table if not exists public.image_submissions (
   updated_at timestamptz not null default now(),
   unique (session_id, student_id)
 );
+
+create table if not exists public.registration_windows (
+  id boolean primary key default true check (id),
+  is_open boolean not null default false,
+  opened_by uuid references public.profiles(id),
+  opened_at timestamptz,
+  closed_at timestamptz
+);
+insert into public.registration_windows (id, is_open) values (true, false) on conflict (id) do nothing;
+
+-- Separate verification evidence keeps identity, liveness, and classroom
+-- context auditable without exposing biometric material to clients.
+create table if not exists public.verification_attempts (
+  id uuid primary key default uuid_generate_v4(),
+  session_id uuid not null references public.sessions(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  submitted_at timestamptz not null default now(),
+  identity_status text not null check (identity_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  liveness_status text not null check (liveness_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  classroom_status text not null check (classroom_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  final_status text not null check (final_status in ('CONFIRMED', 'PENDING_REVIEW', 'REJECTED')),
+  identity_result jsonb not null default '{}'::jsonb,
+  liveness_result jsonb not null default '{}'::jsonb,
+  classroom_result jsonb not null default '{}'::jsonb,
+  reason text not null,
+  unique (session_id, student_id)
+);
+create index if not exists idx_verification_attempts_session on public.verification_attempts(session_id, submitted_at desc);
+alter table public.verification_attempts enable row level security;
 create index if not exists idx_image_submissions_session_status
   on public.image_submissions(session_id, status, submitted_at desc);
 create index if not exists idx_image_submissions_student

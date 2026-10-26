@@ -1,7 +1,7 @@
-export type Role = 'teacher' | 'student'
+export type Role = 'controller' | 'teacher' | 'student'
 export type AttendanceStatus = 'present' | 'absent' | 'pending'
 
-export interface User { id: string; name: string; email: string; role: Role; registration_id?: string }
+export interface User { id: string; name: string; email: string; role: Role; registration_id?: string; face_enrolled?: boolean }
 export interface ClassItem { id: string; name: string; code?: string; schedule?: string; room?: string; student_count?: number }
 export interface AttendanceEntry { student_id: string; registration_id?: string; student_name: string; student_email?: string; status: AttendanceStatus; verification_status?: string; verification_source?: string; submission_time?: string; confidence?: number; note?: string; changed_at?: string; updated_at?: string }
 export interface Suggestion { student_id: string; student_name: string; confidence: number; status?: 'suggestion' | AttendanceStatus }

@@ -1,23 +1,25 @@
 # Build and integration validation
 
-Validation run: 2026-10-26, in the Manus Sandbox clone of `pragna1004/SDTT-ATTENDANCE-SYSTEM-`.
+Validation run: 2026-10-27, in the local Windows Git Bash workspace.
 
 ## Checks completed
 
-- Backend Python compilation: `python -m py_compile app/main.py app/vision.py tests/test_api.py tests/test_vision.py` — passed.
-- Backend tests: `python -m pytest -q` in an isolated test virtual environment — **15 passed**. Tests cover timed-session transitions, role/JWT contract helpers, disabled legacy capture, private-image retention behavior, image quality outcomes, fail-closed detector errors, scene evidence, and removal of embedded EXIF from stored copies. The vision tests inject a deterministic detector; they do not download Ultralytics weights or call Supabase.
-- Dashboard: `npm run build` in `apps/dashboard/` — TypeScript check and Vite production bundle passed.
+- Backend Python compilation: `backend/.venv/Scripts/python.exe -m py_compile ...` — passed.
+- Backend tests: `backend/.venv/Scripts/python.exe -m pytest -q` — **18 passed**. Tests cover timed-session transitions, role/JWT contract helpers, disabled legacy capture, private-image retention, image quality outcomes, fail-closed detector errors, scene evidence, metadata stripping, liveness input requirements, biometric-key fail-closed behavior, and workbook sheet contents. Tests do not download model weights or call Supabase.
+- OpenAPI route generation: imported the FastAPI app with test configuration — passed; 31 routes were generated, including live verification, controller registry, and XLSX export routes.
+- Walkthrough renderer: `backend/.venv/Scripts/python.exe scripts/render_walkthrough.py` — passed; generated a 1280×720, 24fps, 840-frame MP4.
 
 ## Checks not available or not performed
 
-- Flutter/Dart validation was not run: neither `flutter` nor `dart` is installed in the current sandbox. Mobile source changes therefore still need `flutter analyze`, `flutter test`, and a web build in a Flutter-enabled environment.
+- Dashboard/presentation builds were not run: Node.js and npm are not installed in the current environment. Run `npm ci && npm run build` in `apps/dashboard/` and `presentation/attendrix/` on a Node-enabled machine.
+- Flutter/Dart validation was not run: neither `flutter` nor `dart` is installed in the current environment. Mobile source changes therefore still need `flutter pub get`, `flutter analyze`, `flutter test`, and a web build in a Flutter-enabled environment.
 - No Supabase project credentials were available. Schema execution, Supabase Auth, RLS, private Storage upload/signed URLs, realtime network behavior, and full frontend-to-backend E2E flows have not been tested against a live service.
-- No YOLO weight download/inference benchmark was performed. The model is loaded lazily in production and detector behavior in unit tests is injected.
+- No DeepFace or YOLO weight download/inference benchmark was performed. The models are loaded lazily in production and detector behavior in unit tests is injected.
 - No Android/iOS device camera, native build, public deployment, accuracy/fairness benchmark, or production-security review is claimed.
 
 ## Reproducible commands
 
-From `backend/`, use `python -m venv .venv`, activate it, install `requirements.txt`, then run `python -m py_compile app/main.py app/vision.py tests/test_api.py tests/test_vision.py` and `python -m pytest -q`. A first real inference may download the configured Ultralytics model weights; consider supplying an approved local file with `ATTENDANCE_PERSON_MODEL` after license and provenance review.
+From the repository root, run `./run.sh check`, then `./backend/.venv/Scripts/python.exe -m pytest -q` and `./backend/.venv/Scripts/python.exe -m py_compile backend/app/main.py backend/app/vision.py backend/app/verification.py backend/app/reports.py`. A first real inference may download configured model weights; supply approved local files after license and provenance review.
 
 From `apps/dashboard/`, run `npm ci` followed by `npm run build`.
 

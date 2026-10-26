@@ -15,8 +15,8 @@ For optional local backend development, use a reachable local address, for examp
 
 ## Product behavior
 
-Professors can schedule sessions, set the opening/deadline window, configure the stage-region rectangle and visible-person threshold, review student submissions, make manual attendance decisions, and finalize reports. Students sign in with their registered ID or email, capture and submit a classroom panorama, view their own attendance, and receive in-app notifications.
+Professors can schedule sessions, set the opening/deadline window, configure the stage-region rectangle and visible-person threshold, review student submissions, make manual attendance decisions, and finalize reports. Students sign in with their registered ID or email, complete controller-authorized face enrollment, capture a real guided front-camera liveness sequence, capture rear-camera classroom context, view their own attendance, and receive in-app notifications. The older classroom-only submission remains available when biometric verification is not enabled.
 
-Image analysis provides fallible scene evidence only. It does not recognize or match student/lecturer identities. The server controls attendance windows and image retention. See `../../docs/PRIVACY_AND_DEPLOYMENT.md` before using real student data.
+Identity, liveness, and classroom context are evaluated separately by the server. Missing model setup or inconclusive evidence becomes pending review; the app does not claim perfect spoof protection or exact physical position. The server controls attendance windows and image retention. See `../../docs/PRIVACY_AND_DEPLOYMENT.md` before using real student data.
 
 Native Android camera behavior requires a compatible Android SDK/device or emulator; native iOS builds require macOS/Xcode. In a Flutter-enabled environment, run `flutter analyze`, `flutter test`, and optionally `flutter build web` to validate the client.

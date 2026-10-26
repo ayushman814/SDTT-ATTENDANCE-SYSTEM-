@@ -3,6 +3,25 @@
 
 alter table public.profiles
   add column if not exists registration_id text;
+alter table public.profiles
+  add column if not exists face_embedding_encrypted text,
+  add column if not exists face_enrolled_at timestamptz;
+alter table public.classes
+  add column if not exists section text not null default '',
+  add column if not exists room_number text not null default '';
+
+create table if not exists public.registration_windows (
+  id boolean primary key default true check (id),
+  is_open boolean not null default false,
+  opened_by uuid references public.profiles(id),
+  opened_at timestamptz,
+  closed_at timestamptz
+);
+insert into public.registration_windows (id, is_open) values (true, false) on conflict (id) do nothing;
+
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('controller', 'teacher', 'student'));
+alter table public.audit_log alter column session_id drop not null;
 create unique index if not exists profiles_registration_id_unique
   on public.profiles (registration_id) where registration_id is not null;
 
@@ -79,6 +98,24 @@ create index if not exists idx_image_submissions_session_status
   on public.image_submissions(session_id, status, submitted_at desc);
 create index if not exists idx_image_submissions_student
   on public.image_submissions(student_id, submitted_at desc);
+
+create table if not exists public.verification_attempts (
+  id uuid primary key default uuid_generate_v4(),
+  session_id uuid not null references public.sessions(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  submitted_at timestamptz not null default now(),
+  identity_status text not null check (identity_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  liveness_status text not null check (liveness_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  classroom_status text not null check (classroom_status in ('VERIFIED', 'INCONCLUSIVE', 'REJECTED')),
+  final_status text not null check (final_status in ('CONFIRMED', 'PENDING_REVIEW', 'REJECTED')),
+  identity_result jsonb not null default '{}'::jsonb,
+  liveness_result jsonb not null default '{}'::jsonb,
+  classroom_result jsonb not null default '{}'::jsonb,
+  reason text not null,
+  unique (session_id, student_id)
+);
+create index if not exists idx_verification_attempts_session on public.verification_attempts(session_id, submitted_at desc);
+alter table public.verification_attempts enable row level security;
 
 alter table public.image_submissions enable row level security;
 drop policy if exists image_submissions_student_read_own on public.image_submissions;

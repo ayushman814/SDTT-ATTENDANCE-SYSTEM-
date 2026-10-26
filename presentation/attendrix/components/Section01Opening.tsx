@@ -90,7 +90,7 @@ export default function Section01Opening({
           className="text-lg sm:text-xl text-slate-700 font-medium leading-relaxed max-w-2xl mb-8"
         >
           A smarter approach to attendance verification in large lecture halls.
-          Replacing manual 20-minute roll calls with authenticated sessions, dynamic projector challenges, and confidence-scored human review.
+          Replacing manual roll calls with authenticated sessions, separated identity, liveness, and classroom-context evidence, and auditable human review.
         </p>
 
         {/* Action CTAs */}

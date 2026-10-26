@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../config/app_config.dart';
 import '../models/models.dart';
@@ -18,7 +19,18 @@ class ApiException implements Exception {
 class ApiClient {
   ApiClient({http.Client? client}) : _client = client ?? http.Client();
   final http.Client _client;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
   String? accessToken;
+
+  Future<void> persistToken() async {
+    if (accessToken == null) {
+      await _secureStorage.delete(key: 'attendrix_access_token');
+    } else {
+      await _secureStorage.write(key: 'attendrix_access_token', value: accessToken);
+    }
+  }
+
+  Future<String?> restoreToken() => _secureStorage.read(key: 'attendrix_access_token');
 
   Map<String, String> get _headers => {
         'Accept': 'application/json',
@@ -77,6 +89,7 @@ class ApiClient {
     final session =
         AuthSession.fromJson(Map<String, dynamic>.from(data as Map));
     accessToken = session.accessToken;
+    await persistToken();
     return session;
   }
 
@@ -218,6 +231,48 @@ class ApiClient {
 
   Future<void> markNotificationRead(String id) async =>
       _request('POST', '/notifications/$id/read');
+
+  Future<Map<String, dynamic>> enrollReferenceSelfie(List<int> bytes, bool consent) async {
+    if (!consent) throw ApiException('Enrollment consent is required.');
+    final request = http.MultipartRequest('POST', _endpoint('/students/me/face-enrollment'));
+    request.headers['Accept'] = 'application/json';
+    if (accessToken != null) request.headers['Authorization'] = 'Bearer $accessToken';
+    request.files.add(http.MultipartFile.fromBytes('photo', bytes, filename: 'face-enrollment.jpg'));
+    final response = await _client.send(request).timeout(const Duration(seconds: 30));
+    final text = await response.stream.bytesToString();
+    final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(decoded is Map ? decoded['detail']?.toString() ?? 'Face enrollment failed.' : 'Face enrollment failed.', statusCode: response.statusCode);
+    }
+    return Map<String, dynamic>.from(decoded as Map);
+  }
+
+  Future<Map<String, dynamic>> enrollmentStatus() async {
+    final result = await _request('GET', '/registration');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<AttendanceVerifyResult> verifyAttendanceLive(String sessionId, {required List<List<int>> faceFrames, required List<int> classroomBytes}) async {
+    if (faceFrames.length < 4) throw ApiException('Capture the complete guided liveness sequence first.');
+    final request = http.MultipartRequest('POST', _endpoint('/sessions/$sessionId/verification'));
+    request.headers['Accept'] = 'application/json';
+    if (accessToken != null) request.headers['Authorization'] = 'Bearer $accessToken';
+    for (var index = 0; index < faceFrames.length; index++) {
+      request.files.add(http.MultipartFile.fromBytes('face_frames', faceFrames[index], filename: 'face-$index.jpg'));
+    }
+    request.files.add(http.MultipartFile.fromBytes('classroom', classroomBytes, filename: 'classroom.jpg'));
+    final response = await _client.send(request).timeout(const Duration(seconds: 60));
+    final text = await response.stream.bytesToString();
+    final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(decoded is Map ? decoded['detail']?.toString() ?? 'Verification failed.' : 'Verification failed.', statusCode: response.statusCode);
+    }
+    return AttendanceVerifyResult.fromJson(Map<String, dynamic>.from(decoded as Map));
+  }
+
+  Future<Map<String, dynamic>> checkinSweep({required String sessionId, required String attemptId, required List<Map<String, dynamic>> metadata, required List<List<int>> frameBytesList}) async {
+    throw ApiException('Continuous sweep verification is not enabled. Use the guided face and classroom verification workflow.');
+  }
 
   Future<String> wsTicket() async {
     final data = await _request('POST', '/auth/ws-ticket');

@@ -46,7 +46,7 @@ class _AttendanceAppState extends State<AttendanceApp> {
           },
         ),
       ),
-      home: HomeScreen(state: state),
+       home: state.user == null ? LoginScreen(state: state) : HomeScreen(state: state),
     );
   }
 }

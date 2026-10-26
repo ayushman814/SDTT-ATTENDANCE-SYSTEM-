@@ -4,8 +4,9 @@ import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.state});
+  const LoginScreen({super.key, required this.state, this.role});
   final AppState state;
+  final String? role;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -18,6 +19,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool obscure = true;
   int selectedRoleIndex = 0; // 0: Teacher, 1: Student
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.role == 'student') selectedRoleIndex = 1;
+  }
 
   @override
   void dispose() {

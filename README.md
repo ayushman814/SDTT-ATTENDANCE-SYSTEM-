@@ -1,11 +1,12 @@
-# Smart Classroom Attendance
+# Attendrix — classroom attendance system
 
-A shared Flutter mobile app and React dashboard backed by a FastAPI service and Supabase Auth/Postgres/Storage. Students submit a classroom image during a server-timed attendance window. The backend checks image quality and classroom-scene evidence with a pretrained person detector; it does **not** identify people or compare faces. A passing scene check can mark the authenticated submitter present, while uncertain evidence remains pending for a professor to review. Manual roster correction and explicit session finalization remain available.
+A shared Flutter mobile app, React dashboard, and Three.js/GSAP presentation site backed by a FastAPI service and Supabase Auth/Postgres/Storage. The supported verification path keeps identity matching, guided liveness, and classroom context as separate server-evaluated checks. Missing models or insufficient evidence become an inconclusive review state; the service never fabricates a successful result. The original classroom scene-evidence path remains available for deployments that have not enabled biometric enrollment.
 
 ## Components
 
 - `apps/mobile/` — Flutter student/professor workflows, timed attendance, mobile image capture, personal history, in-app notifications, and WebSocket refresh.
 - `apps/dashboard/` — React/TypeScript dashboard for timed session scheduling, student panorama upload, professor image review/manual decisions, audit, history, and CSV/printable reports.
+- `presentation/attendrix/` — premium interactive presentation with custom Three.js lecture-hall geometry and GSAP/ScrollTrigger narrative sections.
 - `backend/` — FastAPI service source for Supabase Auth token verification, database-backed records, private Storage uploads, image verification, retention cleanup, audit, and short-lived WebSocket tickets.
 - `backend/supabase_schema.sql` — complete fresh-project schema and attendance upgrade.
 - `backend/migrations/20261026_smart_attendance.sql` — upgrade for an existing database created from the earlier schema.
@@ -18,6 +19,26 @@ The web and mobile clients default to the deployed Render API at **`https://sdtt
 To use a different API, set `VITE_API_BASE_URL` for a dashboard build or pass `--dart-define=API_BASE_URL=https://your-api.example.com/api` to Flutter. Keep backend credentials out of frontend configuration. The deployment must allow requests from the frontend's origin in its CORS settings.
 
 ## Client setup
+
+First-time local setup:
+
+```bash
+cp .env.example backend/.env
+# edit backend/.env with Supabase credentials and a Fernet key
+./run.sh setup
+```
+
+Start all available services:
+
+```bash
+./run.sh
+```
+
+The launcher prints the services it can run and writes logs under `.attendrix-logs/`. Use `./run.sh check`, `./run.sh test`, and `./run.sh stop` for lifecycle management. On Windows use Git Bash or WSL; the script never overwrites an existing `.env`.
+
+## Video walkthrough
+
+The completed product walkthrough is available at [`artifacts/attendrix_product_walkthrough.mp4`](artifacts/attendrix_product_walkthrough.mp4). It covers the implemented workflow, teacher review, architecture, and responsible-use boundaries. The interactive website remains the live presentation experience.
 
 For local dashboard development while using the hosted API:
 
@@ -35,7 +56,7 @@ flutter pub get
 flutter run
 ```
 
-The clients use the hosted API unless you provide an explicit override.
+The clients use the hosted API unless you provide an explicit override. The presentation site runs at `http://localhost:3001` when launched by `run.sh`.
 
 ## Optional backend development or self-hosting
 
@@ -58,7 +79,7 @@ A professor creates a session with an opening time and duration, minimum visible
 
 ## Privacy and limits
 
-Images are re-encoded without embedded metadata, held in a private Supabase Storage bucket for review, and deleted by the backend retention worker after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30; allowed range 1–3650). Submission metadata and attendance records remain after image deletion. No facial recognition, biometric embeddings, identity matching, email/SMS sender, or push provider is included. Notifications are in-app only. The person detector's scene evidence is fallible; manual attendance remains available. This is a prototype, not a certification of education/privacy law compliance or a production-ready school system. Before a real pilot, review consent/notice, opt-out/manual pathways, model and dependency licensing, security, image retention, fairness/accuracy, and institutional requirements.
+Images are re-encoded without embedded metadata, held in a private Supabase Storage bucket for review, and deleted by the backend retention worker after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30; allowed range 1–3650). Face embeddings are encrypted with a server-only Fernet key and raw enrollment images are not stored. Face identity and liveness are optional model-backed checks; DeepFace/model setup is required, and unavailable or inconclusive checks remain pending review. No score is claimed as scientifically validated. Classroom evidence cannot prove a student's exact seat or identify every person in a 240-seat hall. Before a real pilot, review consent/notice, opt-out/manual pathways, model and dependency licensing, security, image retention, fairness/accuracy, and institutional requirements.
 
 ## Validation
 

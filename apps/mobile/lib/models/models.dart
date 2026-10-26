@@ -23,6 +23,7 @@ class User {
   final String role;
   final String? registrationId;
   bool get isTeacher => role.toLowerCase() == 'teacher';
+  String get displayRole => role == 'controller' ? 'Controller' : isTeacher ? 'Teacher' : 'Student';
   factory User.fromJson(Map<String, dynamic> json) => User(
         id: _string(json['id']),
         name: _string(json['name'], 'User'),
@@ -50,18 +51,68 @@ class Classroom {
     required this.name,
     this.code = '',
     this.teacherName = '',
+    this.section = '',
+    this.roomNumber = '',
+    this.roomPhoto = '',
+    this.studentCount = 0,
   });
   final String id;
   final String name;
   final String code;
   final String teacherName;
+  final String section;
+  final String roomNumber;
+  final String roomPhoto;
+  final int studentCount;
   factory Classroom.fromJson(Map<String, dynamic> json) => Classroom(
         id: _string(json['id'] ?? json['class_id']),
         name: _string(json['name'] ?? json['title'],
             'Class ${json['id'] ?? ''}'),
         code: _string(json['code']),
         teacherName: _string(json['teacher_name']),
+        section: _string(json['section']),
+        roomNumber: _string(json['room_number'] ?? json['room']),
+        roomPhoto: _string(json['room_photo']),
+        studentCount: _int(json['student_count']),
       );
+}
+
+class ControllerStudent {
+  const ControllerStudent({required this.id, required this.name, required this.email, this.rollNumber = '', this.classes = const [], this.registrationLocked = false});
+  final String id;
+  final String name;
+  final String email;
+  final String rollNumber;
+  final List<String> classes;
+  final bool registrationLocked;
+  factory ControllerStudent.fromJson(Map<String, dynamic> json) => ControllerStudent(
+    id: _string(json['id']), name: _string(json['name'], 'Student'), email: _string(json['email']),
+    rollNumber: _string(json['roll_number'] ?? json['registration_id']),
+    classes: (json['classes'] is List ? (json['classes'] as List).map(_string).toList() : <String>[]),
+    registrationLocked: json['registration_locked'] == true || json['face_enrolled'] == true,
+  );
+}
+
+class AttendanceVerifyResult {
+  const AttendanceVerifyResult({required this.status, required this.message, this.faceConfidence, this.faceMatch = false, this.roomMatch = false, this.livenessStatus = 'INCONCLUSIVE'});
+  final String status;
+  final String message;
+  final double? faceConfidence;
+  final bool faceMatch;
+  final bool roomMatch;
+  final String livenessStatus;
+  bool get isPresent => status == 'CONFIRMED';
+  bool get isFlagged => status == 'PENDING_REVIEW';
+  factory AttendanceVerifyResult.fromJson(Map<String, dynamic> json) {
+    final identity = _map(json['identity']);
+    final liveness = _map(json['liveness']);
+    final classroom = _map(json['classroom_context']);
+    return AttendanceVerifyResult(
+      status: _string(json['status'], 'PENDING_REVIEW'), message: _string(json['reason'], 'Verification result is available for review.'),
+      faceConfidence: identity['similarity'] == null ? null : _double(identity['similarity']), faceMatch: _string(identity['status']) == 'VERIFIED',
+      roomMatch: _string(classroom['status']) == 'VERIFIED', livenessStatus: _string(liveness['status'], 'INCONCLUSIVE'),
+    );
+  }
 }
 
 class AttendanceRecord {

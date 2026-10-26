@@ -12,7 +12,7 @@ function number(value: unknown, fallback = 0): number { return typeof value === 
 function status(value: unknown): AttendanceEntry['status'] { return value === 'present' || value === 'absent' || value === 'pending' ? value : 'pending' }
 function normalizeUser(value: unknown): User {
   const raw = record(value)
-  return { id: id(raw.id), name: text(raw.name, 'User'), email: text(raw.email), role: raw.role === 'teacher' ? 'teacher' : 'student', registration_id: raw.registration_id === undefined ? undefined : text(raw.registration_id) }
+  return { id: id(raw.id), name: text(raw.name, 'User'), email: text(raw.email), role: raw.role === 'teacher' ? 'teacher' : raw.role === 'controller' ? 'controller' : 'student', registration_id: raw.registration_id === undefined ? undefined : text(raw.registration_id), face_enrolled: raw.face_enrolled === undefined ? undefined : Boolean(raw.face_enrolled) }
 }
 function normalizeAttendance(value: unknown): AttendanceEntry {
   const raw = record(value)
@@ -120,6 +120,17 @@ export async function login(email: string, password: string): Promise<{ user: Us
 }
 
 export async function getClasses(): Promise<ClassItem[]> { return list(await request<unknown>('/classes')).map(normalizeClass) }
+export async function getControllerClasses(): Promise<ClassItem[]> { return list(await request<unknown>('/controller/classes')).map(normalizeClass) }
+export async function getControllerStudents(): Promise<Array<{ id: string; name: string; email: string; registration_id?: string; face_enrolled?: boolean }>> {
+  return list(await request<unknown>('/controller/students')).map(value => { const raw = record(value); return { id: id(raw.id), name: text(raw.name, 'Student'), email: text(raw.email), registration_id: raw.registration_id === undefined ? undefined : text(raw.registration_id), face_enrolled: Boolean(raw.face_enrolled) } })
+}
+export async function controllerAudit(): Promise<AuditItem[]> { return list(await request<unknown>('/controller/audit')).map(normalizeAudit) }
+export async function setRegistration(open: boolean) { return request(`/registration/${open ? 'open' : 'close'}`, { method: 'POST' }) }
+export async function requestRegistrationStatus(): Promise<{ is_open: boolean; eligible: boolean; face_enrolled: boolean }> { return request<{ is_open: boolean; eligible: boolean; face_enrolled: boolean }>('/registration') }
+export async function importRoster(file: File): Promise<{ accepted: number; rejected: number; errors: Array<{ row: number; reason: string }> }> {
+  const form = new FormData(); form.append('file', file)
+  return request<{ accepted: number; rejected: number; errors: Array<{ row: number; reason: string }> }>('/controller/students/import', { method: 'POST', body: form })
+}
 export async function getSessions(): Promise<Session[]> { return list(await request<unknown>('/sessions')).map(normalizeSession) }
 export async function getRoster(sessionId: string): Promise<Session> { return normalizeSession(await request<unknown>(`/sessions/${encodeURIComponent(sessionId)}`)) }
 export async function startSession(classId: string, details?: { title: string; opens_at: string; deadline_at: string; stage_region: { x: number; y: number; width: number; height: number } | null; minimum_people_visible: number }): Promise<Session> {
@@ -151,6 +162,13 @@ export async function reports(sessionId: string): Promise<Report> {
   const summary = record(raw.summary)
   return { session: normalizeSession(raw.session), rows: list(raw.rows).map(normalizeReportRow), summary: Object.keys(summary).length ? { total_enrolled: number(summary.total_enrolled), automatically_verified_present: number(summary.automatically_verified_present), manually_approved_present: number(summary.manually_approved_present), rejected_submissions: number(summary.rejected_submissions), awaiting_review: number(summary.awaiting_review), did_not_submit: number(summary.did_not_submit), final_absent: number(summary.final_absent) } : undefined, csv: text(raw.csv), pdf_html: text(raw.pdf_html ?? raw.pdf) }
 }
+export async function downloadXlsx(sessionId: string): Promise<Blob> {
+  const headers = new Headers({ Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(`${API_BASE}/reports/sessions/${encodeURIComponent(sessionId)}/xlsx`, { headers })
+  if (!response.ok) throw new Error(`Workbook export failed (${response.status})`)
+  return response.blob()
+}
 export async function audit(sessionId: string): Promise<AuditItem[]> {
   return list(await request<unknown>(`/audit?session_id=${encodeURIComponent(sessionId)}`)).map(normalizeAudit)
 }
@@ -167,4 +185,4 @@ export function openRealtime(ticket: string, onMessage: (event: { type: string; 
   return () => socket.close()
 }
 
-export const roleLabel = (role: Role) => role === 'teacher' ? 'Faculty workspace' : 'Student view'
+export const roleLabel = (role: Role) => role === 'teacher' ? 'Faculty workspace' : role === 'controller' ? 'Controller workspace' : 'Student view'

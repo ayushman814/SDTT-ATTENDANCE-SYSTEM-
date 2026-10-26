@@ -95,95 +95,12 @@ class _SweepCaptureScreenState extends State<SweepCaptureScreen>
   }
 
   Future<void> _startSweepGesture() async {
-    recordedFrames.clear();
-    recordedMetadata.clear();
-    recordedFrameCount = 0;
-    currentHeading = 0.0;
-    startHeading = 0.0;
-    attemptId = 'att_${DateTime.now().millisecondsSinceEpoch}_${widget.state.user?.id.substring(0, 8)}';
-
-    setState(() => phase = SweepPhase.holdingSelfie);
-    _giveFeedbackCue('start');
-
-    final startTime = DateTime.now();
-
-    // 1. Hold still for ~1.0s (selfie frames with classmates)
-    int selfieSteps = 5;
-    for (int i = 0; i < selfieSteps; i++) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      if (!mounted) return;
-      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
-      recordedMetadata.add({
-        'index': recordedFrameCount,
-        'heading_deg': 0.0,
-        'time_offset_s': elapsed,
-      });
-      recordedFrames.add(_generateSampleFrame(recordedFrameCount, 0.0));
-      recordedFrameCount++;
-      setState(() {});
-    }
-
-    // 2. Smooth 180° sweep arc (~5-6 seconds)
-    setState(() => phase = SweepPhase.sweeping);
-    _giveFeedbackCue('keep_going');
-
-    int sweepSteps = 12;
-    for (int i = 1; i <= sweepSteps; i++) {
-      await Future.delayed(const Duration(milliseconds: 400));
-      if (!mounted) return;
-      currentHeading = (i / sweepSteps) * 180.0;
-      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
-
-      recordedMetadata.add({
-        'index': recordedFrameCount,
-        'heading_deg': currentHeading,
-        'time_offset_s': elapsed,
-      });
-      recordedFrames.add(_generateSampleFrame(recordedFrameCount, currentHeading));
-      recordedFrameCount++;
-
-      if (i % 3 == 0) _giveFeedbackCue('keep_going');
-      setState(() {});
-    }
-
-    // 3. Hold facing stage for ~1.0s (lecturer frames)
-    setState(() => phase = SweepPhase.holdingLecturer);
-    _giveFeedbackCue('hold');
-
-    for (int i = 0; i < 4; i++) {
-      await Future.delayed(const Duration(milliseconds: 250));
-      if (!mounted) return;
-      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
-      recordedMetadata.add({
-        'index': recordedFrameCount,
-        'heading_deg': 180.0,
-        'time_offset_s': elapsed,
-      });
-      recordedFrames.add(_generateSampleFrame(recordedFrameCount, 180.0));
-      recordedFrameCount++;
-      setState(() {});
-    }
-
-    _giveFeedbackCue('done');
-
-    if (isPracticeMode) {
-      setState(() {
-        phase = SweepPhase.result;
-        resultState = 'practice_complete';
-        resultReason = 'PRACTICE_MODE';
-        resultMessage = 'Practice sweep complete! You covered a full 180° arc. You are ready for live check-in.';
-      });
-      return;
-    }
-
-    // Submit live verification sweep
-    await _uploadSweepAttempt();
-  }
-
-  List<int> _generateSampleFrame(int index, double heading) {
-    // Generate minimal JPEG header and payload for transmission
-    final dummy = 'FRAME_${index}_H_${heading}_T_${DateTime.now().toIso8601String()}';
-    return utf8.encode(dummy);
+    setState(() {
+      phase = SweepPhase.result;
+      resultState = 'inconclusive';
+      resultReason = 'LEGACY_SWEEP_DISABLED';
+      resultMessage = 'The legacy continuous sweep is not accepted because it did not capture real camera frames. Use the guided front-camera and rear-camera verification workflow.';
+    });
   }
 
   Future<void> _uploadSweepAttempt() async {

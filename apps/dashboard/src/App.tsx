@@ -56,10 +56,10 @@ function App() {
       <div className="workspace-pill"><span className="workspace-dot" /> {api.roleLabel(user.role)}</div>
       <nav aria-label="Primary navigation" className="main-nav">
         <NavButton active={section === 'overview'} icon={<LayoutDashboard size={18} />} label="Overview" onClick={() => { setSection('overview'); setMenuOpen(false) }} />
-        {user.role === 'teacher' ? <>
-          <NavButton active={section === 'sessions'} icon={<Zap size={18} />} label="Live sessions" onClick={() => { setSection('sessions'); setMenuOpen(false) }} />
-          <NavButton active={section === 'attendance'} icon={<History size={18} />} label="Session history" onClick={() => { setSection('attendance'); setMenuOpen(false) }} />
-        </> : <NavButton active={section === 'attendance'} icon={<CheckCircle2 size={18} />} label="My attendance" onClick={() => { setSection('attendance'); setMenuOpen(false) }} />}
+         {user.role === 'teacher' ? <>
+           <NavButton active={section === 'sessions'} icon={<Zap size={18} />} label="Live sessions" onClick={() => { setSection('sessions'); setMenuOpen(false) }} />
+           <NavButton active={section === 'attendance'} icon={<History size={18} />} label="Session history" onClick={() => { setSection('attendance'); setMenuOpen(false) }} />
+         </> : user.role === 'student' ? <NavButton active={section === 'attendance'} icon={<CheckCircle2 size={18} />} label="My attendance" onClick={() => { setSection('attendance'); setMenuOpen(false) }} /> : null}
         <NavButton active={section === 'notifications'} icon={<Bell size={18} />} label="Notifications" onClick={() => { setSection('notifications'); setMenuOpen(false) }} />
       </nav>
       <div className="sidebar-bottom"><div className="privacy-note"><ShieldCheck size={16} /><span><b>Private by design</b><br />Images are private and purged after the configured retention period.</span></div><button className="sidebar-signout" onClick={handleSignOut}><LogOut size={17} /> Sign out</button></div>
@@ -67,7 +67,7 @@ function App() {
     {menuOpen && <button className="scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-content">
       <header className="topbar"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={22} /></button><div className="breadcrumb"><span>Rollcall</span><ChevronRight size={15} /><strong>{section === 'overview' ? 'Overview' : section === 'sessions' ? 'Live sessions' : section === 'attendance' ? (user.role === 'teacher' ? 'Session history' : 'My attendance') : 'Notifications'}</strong></div><div className="topbar-actions"><ConnectionBadge state={connection} onRetry={() => connect()} /><button className="avatar-button" aria-label={`Signed in as ${user.name}`}><span className="avatar">{initials(user.name)}</span><span className="avatar-name">{user.name}</span></button></div></header>
-      <div className="page-wrap">
+       <div className="page-wrap">
         {notice && <div className="toast" role="status"><CheckCircle2 size={17} /> {notice}<button aria-label="Dismiss" onClick={() => setNotice('')}><X size={16} /></button></div>}
         {section === 'overview' && <Overview user={user} onNavigate={setSection} />}
         {section === 'sessions' && user.role === 'teacher' && <ProfessorSessionsFlow />}
@@ -90,7 +90,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
     setLoading(true); setError('')
     try {
       const result = await api.login(identifier, password)
-      if (result.user.role !== role) { api.signOut(); throw new Error(`This account is not a ${role === 'teacher' ? 'professor' : 'student'} account.`) }
+       if (result.user.role !== role) { api.signOut(); throw new Error(`This account is not a ${role === 'teacher' ? 'professor' : role === 'controller' ? 'controller' : 'student'} account.`) }
       onLogin(result.user)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Sign-in failed. Check your ID/email and password.')
@@ -98,18 +98,27 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   }
   return <main className="login-page"><section className="login-panel" aria-labelledby="login-title">
     <p className="eyebrow">College attendance</p><h1 id="login-title">Smart Classroom Attendance</h1>
-    {!role ? <><p>Select your account type to continue.</p><div className="role-choice"><button className="primary-button full" onClick={() => setRole('student')}>Student</button><button className="secondary-button full" onClick={() => setRole('teacher')}>Professor</button></div></> : <>
+    {!role ? <><p>Select your account type to continue.</p><div className="role-choice"><button className="primary-button full" onClick={() => setRole('student')}>Student</button><button className="secondary-button full" onClick={() => setRole('teacher')}>Professor</button><button className="secondary-button full" onClick={() => setRole('controller')}>Controller</button></div></> : <>
       <button className="text-button" onClick={() => { setRole(null); setError('') }}>← Choose another role</button>
-      <h2>{role === 'student' ? 'Student login' : 'Professor login'}</h2>
-      <form onSubmit={submit} className="login-form"><label>{role === 'student' ? 'Student ID or registered email' : 'Professor ID or registered email'}<input type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} autoComplete="username" required /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required /></label>{error && <div className="inline-error" role="alert"><AlertCircle size={16} /> {error}</div>}<button className="primary-button full" type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'} <ArrowRight size={17} /></button></form>
+       <h2>{role === 'student' ? 'Student login' : role === 'controller' ? 'Controller login' : 'Professor login'}</h2>
+       <form onSubmit={submit} className="login-form"><label>{role === 'student' ? 'Student ID or registered email' : role === 'controller' ? 'Controller ID or registered email' : 'Professor ID or registered email'}<input type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} autoComplete="username" required /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required /></label>{error && <div className="inline-error" role="alert"><AlertCircle size={16} /> {error}</div>}<button className="primary-button full" type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'} <ArrowRight size={17} /></button></form>
       <p className="login-foot"><LockKeyhole size={14} /> Your account is verified by the attendance service.</p>
     </>}
   </section></main>
 }
 
 function Overview({ user, onNavigate }: { user: User; onNavigate: (s: Section) => void }) {
-  return user.role === 'teacher' ? <TeacherOverview user={user} onNavigate={onNavigate} /> : <StudentAttendanceFlow user={user} />
+  return user.role === 'teacher' ? <TeacherOverview user={user} onNavigate={onNavigate} /> : user.role === 'controller' ? <ControllerOverview user={user} /> : <StudentAttendanceFlow user={user} />
 }
+function ControllerOverview({ user }: { user: User }) {
+  const [classes, setClasses] = useState<ClassItem[]>([]); const [students, setStudents] = useState<Array<{ id: string; name: string; email: string; registration_id?: string; face_enrolled?: boolean }>>([]); const [auditItems, setAuditItems] = useState<AuditItem[]>([]); const [registrationOpen, setRegistrationOpen] = useState(false); const [message, setMessage] = useState(''); const [error, setError] = useState('')
+  const load = useCallback(async () => { setError(''); try { const [c, s, audit] = await Promise.all([api.getControllerClasses(), api.getControllerStudents(), api.controllerAudit()]); setClasses(c); setStudents(s); setAuditItems(audit) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not load controller data.') } }, [])
+  useEffect(() => { void load(); api.requestRegistrationStatus().then(value => setRegistrationOpen(Boolean(value.is_open))).catch(() => undefined) }, [load])
+  async function toggleRegistration() { try { await api.setRegistration(!registrationOpen); setRegistrationOpen(value => !value); setMessage(`Face registration ${!registrationOpen ? 'opened' : 'closed'}.`) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not update registration.') } }
+  async function importFile(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; try { const result = await api.importRoster(file); setMessage(`${result.accepted} records imported; ${result.rejected} rejected.`); if (result.rejected) setError(result.errors.map(item => `Row ${item.row}: ${item.reason}`).join(' · ')); await load() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not import roster.') } finally { event.target.value = '' } }
+  return <main className="attendance-flow"><header className="flow-heading"><div><p className="eyebrow">Controller workspace</p><h1>Registry and enrollment</h1><p>Manage official student records and the authorized face-registration window. Changes are server-audited.</p></div><button className="secondary-button" onClick={() => void load()}><RefreshCw size={16} /> Refresh</button></header>{message && <div className="flow-message">{message}</div>}{error && <div className="flow-message error">{error}</div>}<div className="flow-summary-grid"><ControllerMetric label="Classes" value={classes.length} /><ControllerMetric label="Student accounts" value={students.length} /><ControllerMetric label="Enrolled faces" value={students.filter(item => item.face_enrolled).length} /></div><section className="flow-panel"><div className="flow-section-heading"><div><h2>Registration window</h2><p>Students can enroll only while this explicit controller switch is open.</p></div><button className={registrationOpen ? 'secondary-button' : 'primary-button'} onClick={() => void toggleRegistration()}>{registrationOpen ? 'Close registration' : 'Open registration'}</button></div></section><section className="flow-panel"><div className="flow-section-heading"><div><h2>Official student registry</h2><p>Existing provisioned accounts are matched by email; invalid rows are returned for correction.</p></div><label className="secondary-button">Import CSV / XLSX<input type="file" accept=".csv,.xlsx" onChange={event => void importFile(event)} hidden /></label></div><div className="flow-history">{students.map(student => <div className="flow-history-row" key={student.id}><div><strong>{student.name}</strong><small>{student.registration_id || 'No registration ID'} · {student.email}</small></div><span className={`flow-status ${student.face_enrolled ? 'verified' : 'pending'}`}>{student.face_enrolled ? 'Enrolled' : 'Not enrolled'}</span></div>)}{!students.length && <p>No student accounts are currently provisioned.</p>}</div></section><section className="flow-panel"><div className="flow-section-heading"><div><h2>Administrative activity</h2><p>Controller actions are recorded with an actor, timestamp, and reason.</p></div><FileText size={18} className="muted" /></div>{auditItems.length ? auditItems.map(item => <div className="flow-history-row" key={item.id}><div><strong>{item.action}</strong><small>{item.note || 'Administrative action'}</small></div><span className="muted">{formatDate(item.timestamp, true)}</span></div>) : <p>No administrative activity yet.</p>}</section></main>
+}
+function ControllerMetric({ label, value }: { label: string; value: number }) { return <div className="flow-summary"><span>{label}</span><strong>{value}</strong></div> }
 function TeacherOverview({ user, onNavigate }: { user: User; onNavigate: (s: Section) => void }) {
   const [classes, setClasses] = useState<ClassItem[]>([]); const [sessions, setSessions] = useState<Session[]>([]); const [loading, setLoading] = useState(true)
   const load = useCallback(async () => { setLoading(true); try { const [c, s] = await Promise.all([api.getClasses(), api.getSessions()]); setClasses(c); setSessions(s) } finally { setLoading(false) } }, [])

@@ -41,6 +41,7 @@ class _LiveFaceVerificationScreenState
 
   // Captured images
   XFile? _facePhoto;
+  final List<List<int>> _faceFrames = [];
   XFile? _roomPhoto;
 
   // Liveness animation state
@@ -190,11 +191,17 @@ class _LiveFaceVerificationScreenState
         return;
       }
 
+      final bytes = await photo.readAsBytes();
       setState(() {
         _facePhoto = photo;
-        _livenessPassed = true;
+        _faceFrames.add(bytes);
+        _livenessPassed = _faceFrames.length >= 4;
         _isProcessing = false;
       });
+
+      if (!_livenessPassed) {
+        return;
+      }
 
       // Show brief success checkmark, then advance to classroom panorama step
       await Future.delayed(const Duration(milliseconds: 700));
@@ -273,16 +280,12 @@ class _LiveFaceVerificationScreenState
     if (_facePhoto == null) return;
 
     try {
-      final faceBytes = await _facePhoto!.readAsBytes();
-      List<int>? roomBytes;
-      if (_roomPhoto != null) {
-        roomBytes = await _roomPhoto!.readAsBytes();
-      }
+      final roomBytes = _roomPhoto == null ? <int>[] : await _roomPhoto!.readAsBytes();
 
       final res = await widget.state.verifyAttendanceLive(
         widget.session.id,
-        faceBytes: faceBytes,
-        roomBytes: roomBytes,
+          faceFrames: _faceFrames,
+          roomBytes: roomBytes,
       );
 
       if (mounted) {
@@ -592,7 +595,7 @@ class _LiveFaceVerificationScreenState
                 Text(
                   _livenessPassed
                       ? 'Liveness Confirmed'
-                      : 'Live Face ID • Auto-scanning in ${_secondsLeft}s',
+                       : 'Challenge frame ${_faceFrames.length + 1} of 4 • ${_faceFrames.length == 0 ? 'look straight ahead' : _faceFrames.length == 1 ? 'turn your head slowly' : _faceFrames.length == 2 ? 'blink once' : 'hold still'}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -782,7 +785,7 @@ class _LiveFaceVerificationScreenState
             ),
             const SizedBox(height: 10),
             const Text(
-              'Extracting 512-dim ArcFace embeddings and cross-referencing classroom environment template...',
+               'Evaluating the configured face model, guided liveness evidence, and classroom context separately...',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: AppColors.slate,
@@ -805,12 +808,12 @@ class _LiveFaceVerificationScreenState
                   ),
                   SizedBox(height: 8),
                   _VerificationStepRow(
-                    label: 'ArcFace Biometric Cosine Comparison',
+                     label: 'Configured face identity comparison',
                     active: true,
                   ),
                   SizedBox(height: 8),
                   _VerificationStepRow(
-                    label: 'Physical Classroom Room Matching',
+                     label: 'Classroom-context evidence check',
                     active: true,
                   ),
                 ],
@@ -910,7 +913,7 @@ class _LiveFaceVerificationScreenState
                       children: [
                         const Text('Biometric Match:', style: TextStyle(color: AppColors.slate, fontSize: 13)),
                         Text(
-                          '${(_result!.faceConfidence * 100).toInt()}% Match',
+                           _result!.faceConfidence == null ? 'No score' : '${(_result!.faceConfidence! * 100).toInt()}% similarity',
                           style: TextStyle(
                             color: _result!.faceMatch ? AppColors.emerald : AppColors.rose,
                             fontWeight: FontWeight.w800,
@@ -932,9 +935,9 @@ class _LiveFaceVerificationScreenState
                         ),
                       ],
                     ),
-                  ],
-                ),
-              ),
+                     ],
+                   ),
+                 ),
               const SizedBox(height: 20),
             ],
 

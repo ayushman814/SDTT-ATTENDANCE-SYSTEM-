@@ -11,12 +11,15 @@
 - Hourly server worker purges image objects after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30) and clears the corresponding Storage path/hash while keeping attendance and review metadata.
 - Legacy simulated capture endpoint is disabled with HTTP 410. Guarded development account seeder reads passwords from environment variables.
 - Setup/API/privacy/requirements documentation updated for Supabase and the scene-only model limits.
+- Optional model-backed face enrollment, guided liveness, separate identity/context verification results, controller registration/import endpoints, real XLSX workbook exports, cross-platform launcher, and a rendered product walkthrough were added.
 
 ## Verification in this work session
 
-- Backend tests: `15 passed`; Python compilation passed. The suite uses fake Supabase clients for session-time and retention cases and a deterministic injected detector; it does not download model weights.
+- Backend tests: `18 passed`; Python compilation passed. The suite uses fake Supabase clients for session-time and retention cases and a deterministic injected detector; it does not download model weights.
+- Product video: `artifacts/attendrix_product_walkthrough.mp4` rendered successfully at 1280×720, 24fps, 840 frames.
 - Dashboard `npm run build`: TypeScript check and Vite production build passed after the final cleanup.
-- Flutter/Dart analyzer and widget tests could not run because neither `flutter` nor `dart` is installed in the current sandbox.
+- Flutter/Dart analyzer and widget tests could not run because neither `flutter` nor `dart` is installed in the current environment.
+- Dashboard/presentation builds could not run because Node.js/npm are not installed in the current environment.
 - No live Supabase project/credentials are available, so migrations, Auth provisioning, private Storage upload, signed image previews, realtime network behavior, and end-to-end session testing are not claimed.
 
 ## Remaining external/deployment requirements

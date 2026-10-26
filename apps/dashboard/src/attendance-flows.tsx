@@ -144,6 +144,13 @@ function ProfessorSessionWorkspace({ session: initialSession, onBack }: { sessio
     const url = URL.createObjectURL(new Blob([report.csv], { type: 'text/csv;charset=utf-8' }))
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${session.id}-attendance.csv`; anchor.click(); URL.revokeObjectURL(url)
   }
+  async function downloadWorkbook() {
+    try {
+      const blob = await api.downloadXlsx(session.id)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${session.id}-attendance.xlsx`; anchor.click(); URL.revokeObjectURL(url)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not export the workbook.') }
+  }
 
   const roster = session.attendance || []
   const summary = report?.summary
@@ -171,7 +178,7 @@ function ProfessorSessionWorkspace({ session: initialSession, onBack }: { sessio
       {roster.map(row => <div className="flow-roster-row" key={row.student_id}><div><strong>{row.student_name}</strong><small>{row.registration_id || row.student_email || row.student_id} · {row.verification_status ? statusLabel(row.verification_status) : 'no image submission'}</small></div><span className={`flow-status ${statusTone(row.status)}`}>{statusLabel(row.status)}</span>{session.status !== 'finalized' && <div className="flow-row-actions"><button className="secondary-button small" disabled={busy} onClick={() => void manualMark(row, 'present')}>Mark present</button><button className="secondary-button small" disabled={busy} onClick={() => void manualMark(row, 'absent')}>Mark absent</button></div>}</div>)}
       {!roster.length && <p>Roster will appear when the session detail is loaded.</p>}
     </div></section>
-    {report && <section className="flow-panel"><div className="flow-section-heading"><h2>Final attendance summary</h2><button className="secondary-button" onClick={downloadCsv}>Download CSV</button></div><div className="flow-summary-grid"><Summary label="Enrolled" value={summary?.total_enrolled ?? report.rows.length} /><Summary label="Auto-verified present" value={summary?.automatically_verified_present ?? 0} /><Summary label="Manually approved present" value={summary?.manually_approved_present ?? 0} /><Summary label="Rejected submissions" value={summary?.rejected_submissions ?? 0} /><Summary label="Awaiting review" value={summary?.awaiting_review ?? 0} /><Summary label="Did not submit" value={summary?.did_not_submit ?? 0} /><Summary label="Final absent" value={summary?.final_absent ?? 0} /></div></section>}
+    {report && <section className="flow-panel"><div className="flow-section-heading"><h2>Final attendance summary</h2><div className="flow-row-actions"><button className="secondary-button" onClick={downloadCsv}>Download CSV</button><button className="secondary-button" onClick={() => void downloadWorkbook()}>Export Excel workbook</button></div></div><div className="flow-summary-grid"><Summary label="Enrolled" value={summary?.total_enrolled ?? report.rows.length} /><Summary label="Auto-verified present" value={summary?.automatically_verified_present ?? 0} /><Summary label="Manually approved present" value={summary?.manually_approved_present ?? 0} /><Summary label="Rejected submissions" value={summary?.rejected_submissions ?? 0} /><Summary label="Awaiting review" value={summary?.awaiting_review ?? 0} /><Summary label="Did not submit" value={summary?.did_not_submit ?? 0} /><Summary label="Final absent" value={summary?.final_absent ?? 0} /></div></section>}
   </main>
 }
 

@@ -39,7 +39,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -142,6 +142,11 @@ def require_teacher(user: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Teacher role required")
 
 
+def require_controller(user: dict[str, Any]) -> None:
+    if user.get("role") != "controller":
+        raise HTTPException(status_code=403, detail="Controller role required")
+
+
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     identifier: Optional[str] = None
@@ -170,6 +175,14 @@ class FinalizeRequest(BaseModel):
 class SubmissionReviewRequest(BaseModel):
     decision: Literal["approve", "reject"]
     reason: str = Field(min_length=1, max_length=500)
+
+
+class ControllerClassRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    code: str = Field(min_length=1, max_length=40)
+    teacher_id: str
+    section: str = Field(default="", max_length=80)
+    room_number: str = Field(default="", max_length=80)
 
 
 def cleanup_expired_images(limit: int = 500) -> int:
@@ -435,7 +448,7 @@ def _session_payload(row: dict[str, Any], user: dict[str, Any]) -> dict[str, Any
 
 
 def _audit(
-    session_id: str,
+    session_id: str | None,
     actor_id: str,
     action: str,
     note: Optional[str] = None,
@@ -478,7 +491,17 @@ def publish_event(loopless_event: dict[str, Any], user_ids: list[str]) -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "classroom-attendance-prototype"}
+    return {"status": "ok", "service": "attendrix-api"}
+
+
+@app.get("/api/ready")
+def readiness() -> dict[str, str]:
+    """Readiness probe that checks the configured database connection."""
+    try:
+        supa().table("profiles").select("id").limit(1).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Database is not ready") from exc
+    return {"status": "ready", "service": "attendrix-api"}
 
 
 @app.post("/api/auth/login")
@@ -518,7 +541,152 @@ def login(req: LoginRequest) -> dict[str, Any]:
 
 @app.get("/api/me")
 def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"], "registration_id": user.get("registration_id")}
+    return {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"], "registration_id": user.get("registration_id"), "face_enrolled": bool(user.get("face_embedding_encrypted"))}
+
+
+@app.get("/api/registration")
+def registration_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    response = supa().table("registration_windows").select("is_open, opened_at, closed_at").eq("id", True).limit(1).execute()
+    state = (response.data or [{}])[0]
+    return {"is_open": bool(state.get("is_open", False)), "eligible": user.get("role") == "student", "face_enrolled": bool(user.get("face_embedding_encrypted"))}
+
+
+@app.post("/api/registration/{action}")
+def update_registration(action: Literal["open", "close"], user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    require_controller(user)
+    if action == "open":
+        values = {"is_open": True, "opened_by": user["id"], "opened_at": utc_now(), "closed_at": None}
+    else:
+        values = {"is_open": False, "closed_at": utc_now()}
+    saved = supa().table("registration_windows").upsert({"id": True, **values}).execute()
+    _audit(None, user["id"], f"registration.{action}", note=f"Face registration window {action}ed.")
+    return (saved.data or [{"is_open": action == "open"}])[0]
+
+
+@app.post("/api/students/me/face-enrollment")
+async def enroll_face_reference(photo: UploadFile = File(...), user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Student role required")
+    registration = supa().table("registration_windows").select("is_open").eq("id", True).limit(1).execute()
+    if not (registration.data or [{}])[0].get("is_open"):
+        raise HTTPException(status_code=409, detail="Face registration is closed. Ask the controller to open the registration period.")
+    if user.get("face_embedding_encrypted"):
+        raise HTTPException(status_code=409, detail="Face enrollment already exists for this student.")
+    if photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP face image")
+    data = bytearray()
+    while True:
+        chunk = await photo.read(1024 * 1024)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > MAX_CAPTURE_BYTES:
+            raise HTTPException(status_code=413, detail="Face image exceeds the configured size limit")
+    if not data:
+        raise HTTPException(status_code=400, detail="The face image is empty")
+    from .verification import VerificationInputError, VerificationUnavailable, enroll_face
+    try:
+        encrypted = await asyncio.to_thread(enroll_face, bytes(data))
+    except VerificationInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except VerificationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    saved = supa().table("profiles").update({"face_embedding_encrypted": encrypted, "face_enrolled_at": utc_now()}).eq("id", user["id"]).is_("face_embedding_encrypted", "null").select("id, face_enrolled_at").execute()
+    if not saved.data:
+        raise HTTPException(status_code=409, detail="Enrollment was recorded concurrently or the student is no longer eligible.")
+    _audit(None, user["id"], "face.enrolled", note="Encrypted face representation created; source image was not stored.")
+    return {"status": "enrolled", "enrolled_at": saved.data[0].get("face_enrolled_at")}
+
+
+@app.get("/api/controller/classes")
+def controller_classes(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    require_controller(user)
+    response = supa().table("classes").select("*").order("name").execute()
+    result = []
+    for item in response.data or []:
+        count = supa().table("enrollments").select("student_id", count="exact").eq("class_id", item["id"]).execute()
+        result.append({**item, "student_count": getattr(count, "count", None) or len(count.data or [])})
+    return result
+
+
+@app.get("/api/controller/students")
+def controller_students(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    require_controller(user)
+    response = supa().table("profiles").select("id, name, email, registration_id, face_enrolled_at").eq("role", "student").order("name").execute()
+    return [{**item, "face_enrolled": bool(item.get("face_enrolled_at")), "registration_locked": bool(item.get("face_enrolled_at"))} for item in (response.data or [])]
+
+
+@app.post("/api/controller/classes")
+def controller_create_class(body: ControllerClassRequest, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    require_controller(user)
+    teacher = supa().table("profiles").select("id, role").eq("id", body.teacher_id).single().execute()
+    if not teacher.data or teacher.data.get("role") != "teacher":
+        raise HTTPException(status_code=422, detail="teacher_id must refer to an active teacher profile")
+    saved = supa().table("classes").insert({"name": body.name.strip(), "code": body.code.strip(), "teacher_id": body.teacher_id, "section": body.section.strip(), "room_number": body.room_number.strip(), "created_at": utc_now()}).execute()
+    if not saved.data:
+        raise HTTPException(status_code=409, detail="Class code already exists or the class could not be created")
+    _audit(None, user["id"], "controller.class_created", metadata={"class_id": saved.data[0]["id"]})
+    return saved.data[0]
+
+
+@app.post("/api/controller/students/import")
+async def controller_import_students(file: UploadFile = File(...), user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    """Validate an official CSV/XLSX roster and update only existing accounts."""
+    require_controller(user)
+    content = await file.read()
+    if len(content) > MAX_CAPTURE_BYTES:
+        raise HTTPException(status_code=413, detail="Roster file is too large")
+    rows: list[dict[str, Any]] = []
+    filename = (file.filename or "").lower()
+    try:
+        if filename.endswith(".csv"):
+            rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
+        elif filename.endswith(".xlsx"):
+            from openpyxl import load_workbook
+            workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            sheet = workbook.active
+            values = list(sheet.values)
+            headers = [str(value or "").strip().lower() for value in (values[0] if values else [])]
+            rows = [dict(zip(headers, values_row)) for values_row in values[1:]]
+        else:
+            raise ValueError("Upload a CSV or XLSX roster file")
+    except (UnicodeDecodeError, ValueError, IndexError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    required = {"name", "email", "registration_id"}
+    headers = {str(key).strip().lower() for row in rows for key in row.keys()}
+    missing = sorted(required - headers)
+    if missing:
+        raise HTTPException(status_code=422, detail={"message": "Roster headers are missing", "missing": missing})
+    seen_ids: set[str] = set()
+    accepted: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for index, raw in enumerate(rows, start=2):
+        item = {str(key).strip().lower(): value for key, value in raw.items()}
+        name, email, registration_id = str(item.get("name") or "").strip(), str(item.get("email") or "").strip().lower(), str(item.get("registration_id") or "").strip()
+        if not name or "@" not in email or not registration_id:
+            errors.append({"row": index, "reason": "name, email, and registration_id are required"}); continue
+        if registration_id in seen_ids:
+            errors.append({"row": index, "reason": "duplicate registration_id in import", "registration_id": registration_id}); continue
+        seen_ids.add(registration_id)
+        profile = supa().table("profiles").select("id, role").eq("email", email).limit(1).execute()
+        if not profile.data or profile.data[0].get("role") != "student":
+            errors.append({"row": index, "reason": "student account is not provisioned", "email": email}); continue
+        accepted.append({"profile_id": profile.data[0]["id"], "name": name, "email": email, "registration_id": registration_id})
+    for item in accepted:
+        supa().table("profiles").update({"name": item["name"], "registration_id": item["registration_id"]}).eq("id", item["profile_id"]).execute()
+    _audit(None, user["id"], "controller.roster_imported", metadata={"accepted": len(accepted), "rejected": len(errors)})
+    return {"accepted": len(accepted), "rejected": len(errors), "errors": errors}
+
+
+@app.post("/api/controller/students/{student_id}/reset-face")
+def controller_reset_face(student_id: str, user: dict[str, Any] = Depends(current_user)) -> dict[str, str]:
+    require_controller(user)
+    target = supa().table("profiles").select("id, role").eq("id", student_id).single().execute()
+    if not target.data or target.data.get("role") != "student":
+        raise HTTPException(status_code=404, detail="Student profile not found")
+    supa().table("profiles").update({"face_embedding_encrypted": None, "face_enrolled_at": None}).eq("id", student_id).execute()
+    _audit(None, user["id"], "controller.face_reset", note="Student face enrollment reset by controller.", metadata={"student_id": student_id})
+    return {"status": "reset"}
 
 
 @app.post("/api/auth/ws-ticket")
@@ -819,6 +987,123 @@ async def submit_classroom_image(
     _audit(session_id, user["id"], "image.submitted", note=analysis["explanation"], metadata={"submission_id": submission["id"], "verification_status": analysis["status"], "attempt_number": attempt_number})
     publish_event(event_payload("submission.created", {"session_id": session_id, "submission_id": submission["id"], "status": analysis["status"]}), [user["id"], row.get("teacher_id", "")])
     return {"id": submission["id"], "session_id": session_id, "status": analysis["status"], "submitted_at": now, "explanation": analysis["explanation"], "quality": analysis["quality"], "detected_people": analysis.get("detected_people"), "nearby_people": analysis.get("nearby_people"), "stage_person_detected": analysis.get("stage_person_detected"), "attempt_number": attempt_number}
+
+
+@app.post("/api/sessions/{session_id}/verification")
+async def verify_attendance(
+    session_id: str,
+    classroom: UploadFile = File(...),
+    face_frames: list[UploadFile] = File(default=[]),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Evaluate identity, guided liveness, and classroom context independently."""
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Student role required")
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user)
+    if row["status"] != "open":
+        raise HTTPException(status_code=409, detail="The attendance session is not accepting verification")
+    enrolled = user.get("face_embedding_encrypted")
+    if not enrolled:
+        raise HTTPException(status_code=409, detail="Complete face enrollment before starting attendance verification")
+    if len(face_frames) < 4:
+        raise HTTPException(status_code=422, detail="Capture the complete guided liveness sequence before submitting")
+    if classroom.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP classroom image")
+
+    frame_bytes: list[bytes] = []
+    for frame in face_frames:
+        if frame.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise HTTPException(status_code=415, detail="Every face frame must be a JPEG, PNG, or WebP image")
+        content = await frame.read()
+        if not content or len(content) > MAX_CAPTURE_BYTES:
+            raise HTTPException(status_code=413, detail="A face frame is empty or exceeds the configured size limit")
+        frame_bytes.append(content)
+    classroom_bytes = await classroom.read()
+    if not classroom_bytes or len(classroom_bytes) > MAX_CAPTURE_BYTES:
+        raise HTTPException(status_code=413, detail="The classroom image is empty or exceeds the configured size limit")
+
+    from .verification import VerificationInputError, VerificationUnavailable, compare_face, evaluate_liveness
+    from .vision import analyze_classroom_image, strip_image_metadata
+
+    liveness = await asyncio.to_thread(evaluate_liveness, frame_bytes)
+    try:
+        identity = await asyncio.to_thread(compare_face, frame_bytes[len(frame_bytes) // 2], enrolled)
+    except VerificationInputError as exc:
+        identity = {"status": "REJECTED", "reason": str(exc)}
+    except VerificationUnavailable as exc:
+        identity = {"status": "INCONCLUSIVE", "reason": str(exc)}
+    classroom_result = await asyncio.to_thread(
+        analyze_classroom_image,
+        classroom_bytes,
+        stage_region=row.get("stage_region"),
+        minimum_people=int(row.get("minimum_people_visible") or ATTENDANCE_MIN_VISIBLE_PEOPLE),
+    )
+    classroom_status = "VERIFIED" if classroom_result.get("status") == "VERIFIED" else "REJECTED" if classroom_result.get("status") == "REJECTED" else "INCONCLUSIVE"
+    statuses = [identity.get("status"), liveness.get("status"), classroom_status]
+    final_status = "REJECTED" if "REJECTED" in statuses else "CONFIRMED" if all(value == "VERIFIED" for value in statuses) else "PENDING_REVIEW"
+    reason = "; ".join(str(item.get("reason") or item.get("explanation") or "Evidence was inconclusive.") for item in (identity, liveness, classroom_result) if item.get("status") != "VERIFIED")
+    if not reason:
+        reason = "Identity, liveness, and classroom-context checks passed."
+
+    stored_data: bytes | None = None
+    image_format = classroom_result.get("quality", {}).get("format")
+    if image_format:
+        stored_data = strip_image_metadata(classroom_bytes)
+    image_path = None
+    if stored_data:
+        extension = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}.get(image_format)
+        if extension:
+            image_path = f"{session_id}/{user['id']}/{uuid.uuid4().hex}.{extension}"
+            try:
+                supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).upload(image_path, stored_data, {"content-type": {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image_format], "upsert": "false"})
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="Secure classroom evidence storage is unavailable") from exc
+
+    now = utc_now()
+    attempt = {
+        "session_id": session_id,
+        "student_id": user["id"],
+        "submitted_at": now,
+        "identity_status": identity.get("status", "INCONCLUSIVE"),
+        "liveness_status": liveness.get("status", "INCONCLUSIVE"),
+        "classroom_status": classroom_status,
+        "final_status": final_status,
+        "identity_result": identity,
+        "liveness_result": liveness,
+        "classroom_result": classroom_result,
+        "reason": reason,
+    }
+    try:
+        saved_attempt = supa().table("verification_attempts").upsert(attempt, on_conflict="session_id,student_id").execute()
+    except Exception as exc:
+        if image_path:
+            try:
+                supa().storage.from_(ATTENDANCE_STORAGE_BUCKET).remove([image_path])
+            except Exception:
+                pass
+        raise HTTPException(status_code=409, detail="A verification attempt already exists or could not be recorded") from exc
+
+    if image_path:
+        submission_data = {
+            "session_id": session_id, "student_id": user["id"], "attempt_number": 1,
+            "submitted_at": now, "status": classroom_result.get("status", "NEEDS_REVIEW"),
+            "explanation": reason, "quality_result": classroom_result.get("quality", {}),
+            "analysis_json": classroom_result, "detected_people": classroom_result.get("detected_people"),
+            "nearby_people": classroom_result.get("nearby_people"), "stage_person_detected": classroom_result.get("stage_person_detected"),
+            "storage_path": image_path, "image_sha256": hashlib.sha256(stored_data).hexdigest(),
+        }
+        supa().table("image_submissions").upsert(submission_data, on_conflict="session_id,student_id").execute()
+    attendance_values = {
+        "status": "present" if final_status == "CONFIRMED" else "pending",
+        "verification_status": "VERIFIED" if final_status == "CONFIRMED" else "REJECTED" if final_status == "REJECTED" else "NEEDS_REVIEW",
+        "verification_source": "automatic" if final_status == "CONFIRMED" else None,
+        "note": reason, "updated_by": user["id"], "updated_at": now,
+    }
+    supa().table("attendance").update(attendance_values).eq("session_id", session_id).eq("student_id", user["id"]).execute()
+    _audit(session_id, user["id"], "verification.completed", note=reason, metadata={"attempt_id": (saved_attempt.data or [{}])[0].get("id"), "final_status": final_status})
+    publish_event(event_payload("attendance.changed", {"session_id": session_id, "student_id": user["id"], "status": final_status}), [user["id"], row.get("teacher_id", "")])
+    return {"status": final_status, "reason": reason, "identity": identity, "liveness": liveness, "classroom_context": classroom_result, "submitted_at": now}
 
 
 @app.get("/api/sessions/{session_id}/submissions")
@@ -1158,6 +1443,7 @@ def report(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dic
         + "</tbody></table></body></html>"
     )
     return {
+        "generated_at": utc_now(),
         "session": {
             "id": row["id"],
             "class_id": row["class_id"],
@@ -1177,6 +1463,23 @@ def report(session_id: str, user: dict[str, Any] = Depends(current_user)) -> dic
         "pdf_html": pdf_html,
         "pdf_note": "Print pdf_html from a trusted client to create a PDF; the API does not claim to be a PDF renderer.",
     }
+
+
+@app.get("/api/reports/sessions/{session_id}/xlsx")
+def report_xlsx(session_id: str, user: dict[str, Any] = Depends(current_user)) -> StreamingResponse:
+    require_teacher(user)
+    row = _get_session_or_404(session_id)
+    _assert_session_access(row, user, teacher_only=True)
+    report_data = report(session_id, user)
+    audit_items = get_audit(session_id, user)
+    from .reports import build_attendance_workbook
+    workbook = build_attendance_workbook(report_data, audit_items)
+    filename = f"attendrix-{session_id}-attendance.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/audit")
@@ -1201,6 +1504,29 @@ def get_audit(session_id: str = Query(...), user: dict[str, Any] = Depends(curre
             item["actor_name"] = r["profiles"]["name"]
             item.pop("profiles", None)
         item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        result.append(item)
+    return result
+
+
+@app.get("/api/controller/audit")
+def get_controller_audit(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+    require_controller(user)
+    response = (
+        supa().table("audit_log")
+        .select("*, profiles(id, name)")
+        .is_("session_id", "null")
+        .order("timestamp", desc=True)
+        .limit(200)
+        .execute()
+    )
+    result = []
+    for row in response.data or []:
+        item = {**row}
+        profile = item.pop("profiles", None)
+        if isinstance(profile, dict):
+            item["actor_id"] = profile.get("id")
+            item["actor_name"] = profile.get("name")
+        item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
         result.append(item)
     return result
 

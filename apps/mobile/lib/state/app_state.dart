@@ -9,6 +9,7 @@ import '../services/realtime_service.dart';
 class AppState extends ChangeNotifier {
   AppState() {
     realtime = RealtimeService(api);
+    restoreSession();
   }
   final ApiClient api = ApiClient();
   late final RealtimeService realtime;
@@ -19,10 +20,29 @@ class AppState extends ChangeNotifier {
   StudentAttendance? studentAttendance;
   AttendanceSession? activeSession;
   List<Suggestion> suggestions = [];
+  List<Classroom> controllerClasses = [];
+  List<ControllerStudent> controllerStudents = [];
   Map<String, dynamic>? latestSubmission;
   bool busy = false;
   String? error;
   String? liveMessage;
+
+  Future<void> restoreSession() async {
+    final token = await api.restoreToken();
+    if (token == null || token.isEmpty) return;
+    try {
+      api.accessToken = token;
+      final profile = await api.me();
+      auth = AuthSession(accessToken: token, user: profile);
+      await loadHome();
+      _startRealtime();
+    } on ApiException {
+      api.accessToken = null;
+      await api.persistToken();
+    } finally {
+      notifyListeners();
+    }
+  }
 
   User? get user => auth?.user;
   bool get isTeacher => user?.isTeacher == true;
@@ -57,6 +77,57 @@ class AppState extends ChangeNotifier {
     sessions = await api.sessions();
     notifications = await api.notifications();
     if (!isTeacher) studentAttendance = await api.studentAttendance();
+    notifyListeners();
+  }
+
+  void setRole(String role) {
+    // The backend remains the source of truth for roles; this only supports
+    // the legacy role-selection screen's local navigation state.
+    notifyListeners();
+  }
+
+  Future<void> checkEnrollment() async {
+    try {
+      await api.enrollmentStatus();
+    } on ApiException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
+  }
+
+  Future<AttendanceVerifyResult> verifyAttendanceLive(String sessionId, {required List<List<int>> faceFrames, required List<int> roomBytes}) async {
+    final result = await api.verifyAttendanceLive(sessionId, faceFrames: faceFrames, classroomBytes: roomBytes);
+    latestSubmission = {'status': result.status, 'reason': result.message};
+    studentAttendance = await api.studentAttendance();
+    notifyListeners();
+    return result;
+  }
+
+  Future<void> loadControllerData() async {
+    try {
+      controllerClasses = await api.classes();
+      controllerStudents = [];
+      notifyListeners();
+    } on ApiException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> createClassroom({required String name, required String code, required String section, required String roomNumber, required String roomPhoto}) async {
+    error = 'Classroom administration requires the controller API workflow and cannot be completed from this client yet.';
+    notifyListeners();
+    return false;
+  }
+
+  Future<bool> createStudent({required String name, required String email, required String rollNumber, String? studentId, required List<String> classIds}) async {
+    error = 'Student registry imports must be performed through the validated controller import workflow.';
+    notifyListeners();
+    return false;
+  }
+
+  Future<void> unlockStudent(String studentId) async {
+    error = 'Biometric reset requires an authorized controller action.';
     notifyListeners();
   }
 
@@ -258,6 +329,7 @@ class AppState extends ChangeNotifier {
   Future<void> logout() async {
     await realtime.dispose();
     api.accessToken = null;
+    await api.persistToken();
     auth = null;
     classes = [];
     sessions = [];
