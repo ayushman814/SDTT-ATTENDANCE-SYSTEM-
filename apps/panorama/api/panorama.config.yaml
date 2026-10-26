@@ -1,0 +1,34 @@
+# Panorama attendance — all verification thresholds live in this one file.
+# Environment variables (secrets, hosts, paths) stay in .env; every tunable
+# for the verification pipeline is here.
+
+attendance:
+  default_window_minutes: 10        # window used when the professor does not pick one
+  allowed_window_minutes: [5, 10, 15]
+
+verification:
+  panorama_min_ratio: 2.0           # width/height must be >= this to count as a panorama
+  phash_hamming_max: 8              # <= this hamming distance vs any earlier submission => duplicate
+  det_score_threshold: 0.6          # YuNet detector confidence floor
+  self_match_threshold: 0.40        # SFace cosine similarity >= this => same identity
+  lecturer_match_threshold: 0.40    # same metric for the professor's enrolled face
+  review_margin: 0.08               # scores within [threshold - margin, threshold) => PENDING_REVIEW
+  min_neighbours: 1                 # at least this many other faces adjacent to the student
+  neighbour_min_fraction: 0.02      # min horizontal distance (fraction of image width) to count as distinct
+  neighbour_max_fraction: 0.45      # max horizontal distance to still count as "adjacent"
+
+anti_spoof:
+  blur_min_variance: 60.0           # Laplacian variance floor; below => REJECTED (image_too_blurry)
+  exif_max_age_minutes: 30          # a DateTimeOriginal older than this => REJECTED (stale_capture)
+  moire_peak_ratio_max: 500.0       # FFT peak/median in the HF ring; above => PENDING_REVIEW (screen_moire_suspect)
+
+upload:
+  max_bytes: 15728640               # 15 MiB hard cap on panorama uploads
+  allowed_content_types: ["image/jpeg", "image/png", "image/webp"]
+
+geo:
+  radius_default_m: 200             # default radius when professor enables the location check
+
+rate_limits:
+  login_per_minute: 10
+  submit_per_minute: 5
