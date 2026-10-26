@@ -30,15 +30,31 @@ if [ ! -f models/face_detection_yunet_2023mar.onnx ]; then
   .venv/bin/python scripts/download_models.py
 fi
 
-# --- Demo data (skips silently if users already exist) ----------------------
-if [ ! -f panorama.db ] && [ "${PANORAMA_DATABASE_URL:-}" = "" ]; then
+# --- Demo data ---------------------------------------------------------------
+# seed.py is idempotent: it only creates accounts that don't exist yet, so run
+# it every local start — an existing-but-empty panorama.db still gets its demo
+# users. Skipped when an external DB (Supabase/Postgres) is configured.
+if [ "${PANORAMA_DATABASE_URL:-}" = "" ]; then
   echo "[backend] seeding demo users (prof@demo.edu / prof12345, student1..5@demo.edu / student123)..."
   .venv/bin/python seed.py
 fi
 
 # --- Defaults for local development -----------------------------------------
-export PANORAMA_JWT_SECRET="${PANORAMA_JWT_SECRET:-dev-secret-change-me}"
-export PANORAMA_PROFESSOR_INVITE_CODE="${PANORAMA_PROFESSOR_INVITE_CODE:-dev-invite}"
+# Random per-run values, NOT published constants: this API is bound to the LAN
+# (classroom Wi-Fi!), so a checked-in JWT secret or invite code would let any
+# student on the network forge tokens or register as a professor. Export your
+# own values to keep logins stable across restarts.
+rand_hex() { .venv/bin/python -c "import secrets; print(secrets.token_hex(16))"; }
+if [ -z "${PANORAMA_JWT_SECRET:-}" ]; then
+  PANORAMA_JWT_SECRET="$(rand_hex)"
+  echo "[backend] generated a random PANORAMA_JWT_SECRET (logins reset on restart)"
+fi
+export PANORAMA_JWT_SECRET
+if [ -z "${PANORAMA_PROFESSOR_INVITE_CODE:-}" ]; then
+  PANORAMA_PROFESSOR_INVITE_CODE="$(rand_hex)"
+fi
+export PANORAMA_PROFESSOR_INVITE_CODE
+echo "[backend] professor invite code: $PANORAMA_PROFESSOR_INVITE_CODE"
 export PANORAMA_CORS_ORIGINS="${PANORAMA_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}"
 
 # --- Network info for the Flutter app ---------------------------------------

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import '../state/app_state.dart';
+import '../panorama/panorama_home_screen.dart';
 import '../widgets/app_widgets.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -378,6 +379,28 @@ class _LoginScreenState extends State<LoginScreen> {
                           style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500),
                         ),
                         onPressed: _showServerDialog,
+                      ),
+                    ),
+                  ),
+
+                  // Panorama attendance — separate backend, no main login needed
+                  FadeSlideIn(
+                    delay: const Duration(milliseconds: 280),
+                    child: Center(
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.primary,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.panorama_photosphere_rounded, size: 16),
+                        label: const Text(
+                          'Panorama attendance',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                        ),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                              builder: (_) => const PanoramaHomeScreen()),
+                        ),
                       ),
                     ),
                   ),

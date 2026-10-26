@@ -9,10 +9,12 @@
 #   ./start-flutter.sh                          # LAN IP auto-detected
 #   ./start-flutter.sh http://192.168.1.5:8100  # explicit backend URL
 #   ./start-flutter.sh -d chrome                # extra args pass to flutter run
+#   PORT=8200 ./start-flutter.sh                # must match PORT given to start-backend.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$ROOT/apps/mobile"
+PORT="${PORT:-8100}"
 
 # First non-flag arg is treated as the backend URL.
 API_URL=""
@@ -27,7 +29,7 @@ done
 
 if [ -z "$API_URL" ]; then
   LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  API_URL="http://${LAN_IP:-127.0.0.1}:8100/api"
+  API_URL="http://${LAN_IP:-127.0.0.1}:$PORT/api"
 fi
 [[ "$API_URL" != */api ]] && API_URL="${API_URL%/}/api"
 
@@ -38,4 +40,5 @@ flutter pub get
 
 echo "[flutter] PANORAMA_API_URL=$API_URL"
 echo "[flutter] make sure ./start-backend.sh is running and the phone is on the same Wi-Fi."
+echo "[flutter] panorama sign-in is on the LOGIN screen and the app-bar icon — the main login needs the separate demo backend."
 exec flutter run --dart-define=PANORAMA_API_URL="$API_URL" "${ARGS[@]}"
