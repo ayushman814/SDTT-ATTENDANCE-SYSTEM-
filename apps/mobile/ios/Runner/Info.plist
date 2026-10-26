@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Camera is used only for a request-scoped synthetic attendance capture reviewed by the teacher.</string>
+	<string>Camera is used for front-camera liveness frames and rear-camera classroom context evidence during an attendance session.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+panorama.db
+models/*.onnx
+uploads/submissions/*
+uploads/faces/*
+.pytest_cache/

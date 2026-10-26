@@ -21,14 +21,14 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: "Attendrix — Computer-Vision-Assisted Attendance System | 3D Experience",
   description:
-    "An immersive 3D scrollytelling demonstration of Attendrix, a computer-vision-assisted attendance verification system designed for 80, 120, and 240-seat lecture halls. Combining dynamic projector challenges, student selfie verification, and teacher audit workflows.",
+    "An immersive 3D scrollytelling demonstration of Attendrix, a computer-vision-assisted attendance system for large lecture halls. Combining official enrollment, guided identity and liveness checks, classroom context evidence, and teacher review workflows.",
   keywords: [
     "Attendrix",
     "Attendance System",
     "Computer Vision",
     "Lecture Hall",
-    "ArcFace",
-    "YuNet",
+    "DeepFace",
+    "OpenCV",
     "SDTT",
     "Verification Pipeline",
   ],

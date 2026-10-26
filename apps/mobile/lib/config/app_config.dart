@@ -3,7 +3,7 @@ class AppConfig {
 
   static String _apiBaseUrl = const String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://localhost:8000/api',
+    defaultValue: 'https://sdtt-attendance-system.onrender.com/api',
   );
 
   static String get apiBaseUrl => _apiBaseUrl;

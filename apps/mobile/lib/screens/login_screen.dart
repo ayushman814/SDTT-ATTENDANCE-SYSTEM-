@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
+import '../panorama/panorama_home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -254,6 +255,18 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                       ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                            builder: (_) => const PanoramaHomeScreen()),
+                      ),
+                      icon: const Icon(Icons.panorama_photosphere_rounded,
+                          size: 18),
+                      label: const Text('Panorama attendance'),
                     ),
                   ),
                 ],

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
+import '../panorama/panorama_home_screen.dart';
 import 'notifications_screen.dart';
 import 'session_screen.dart';
 import 'sweep_capture_screen.dart';
@@ -134,6 +135,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.refresh_rounded),
+          ),
+
+          IconButton(
+            tooltip: 'Panorama attendance',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                  builder: (_) => const PanoramaHomeScreen()),
+            ),
+            icon: const Icon(Icons.panorama_photosphere_rounded),
           ),
 
           PopupMenuButton<String>(

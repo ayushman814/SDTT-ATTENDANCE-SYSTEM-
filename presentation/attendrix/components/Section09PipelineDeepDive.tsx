@@ -41,8 +41,8 @@ export default function Section09PipelineDeepDive() {
       shortName: "1. Capture",
       tagline: "Ingestion of client-side payloads and room context",
       purpose:
-        "Ingests the authenticated student selfie submission, rotating projector challenge token, and optional wide-angle context image over secure HTTPS / WebSocket.",
-      input: "Base64 JPEG payload, JWT bearer token, active session ID, client timestamp.",
+        "Ingests authenticated student face frames and a rear-camera classroom image over the protected multipart API.",
+      input: "Multipart image frames, JWT bearer token, active session ID.",
       output: "Raw image buffer in memory, parsed metadata dict, validated student ID.",
       failureConditions: "Corrupt image format, payload size > 10MB, network transmission drop.",
       status: "Implemented in Prototype",
@@ -64,7 +64,7 @@ export default function Section09PipelineDeepDive() {
       purpose:
         "Evaluates whether the student photo contains sufficient optical information before expending neural network compute. Computes Laplacian variance for motion blur.",
       input: "RGB image tensor [H, W, 3].",
-      output: "Sharpness index, mean luminance (lux estimate), yaw/pitch/roll angle estimation.",
+      output: "Resolution, aspect ratio, brightness, and blur checks.",
       failureConditions:
         "Laplacian variance < 100 (severe blur), luminance < 30 lux (extreme underexposure), extreme profile angle (>45°).",
       status: "Implemented in Prototype",
@@ -78,13 +78,13 @@ export default function Section09PipelineDeepDive() {
     },
     {
       id: 3,
-      name: "Stage 3: Face Detection (YuNet / SCRFD)",
+      name: "Stage 3: Face Detection (OpenCV)",
       shortName: "3. Detection",
       tagline: "Candidate localization ≠ identity recognition",
       purpose:
-        "Locates human head regions and 5 facial landmarks (left eye, right eye, nose tip, left mouth corner, right mouth corner). DOES NOT IDENTIFY WHO THE PERSON IS.",
+        "Checks that each guided frame contains exactly one visible face. Detection does not identify who the person is.",
       input: "Preprocessed RGB image.",
-      output: "Bounding box [x, y, w, h], confidence score, 5 facial landmark coordinate pairs.",
+      output: "A single-face visibility result for each guided frame.",
       failureConditions:
         "No face detected (occlusion/off-camera), multiple faces in individual selfie frame.",
       status: "Implemented in Prototype",
@@ -100,15 +100,15 @@ _, faces = detector.detect(img)`,
     },
     {
       id: 4,
-      name: "Stage 4: Identity Verification (ArcFace 1:1)",
+      name: "Stage 4: Identity Verification (configured face model)",
       shortName: "4. Identity",
-      tagline: "512-dimensional vector embedding vs registered reference",
+      tagline: "Encrypted enrolled representation vs submitted frame",
       purpose:
-        "Performs affine transformation to align eye landmarks horizontally, normalizes canonical 112×112 crop, extracts 512-D unit embedding, and computes cosine similarity against the student's authorized registration reference.",
+        "Uses the same configured DeepFace pipeline for enrollment and verification, then compares the submitted representation with the encrypted enrolled representation.",
       input: "Aligned 112×112 face crop + reference embedding from secure database.",
-      output: "Scalar cosine similarity score cos(θ) ∈ [-1.0, 1.0].",
+      output: "A model similarity result when the configured model is available; otherwise an inconclusive state.",
       failureConditions:
-        "Cosine similarity below threshold (e.g., < 0.72), missing registered reference embedding.",
+        "Missing enrollment, model failure, unusable face, or similarity below the explicitly configured threshold.",
       status: "Implemented in Prototype",
       statusColor: "bg-emerald-100 text-emerald-950 border-emerald-300 font-bold",
       codeSnippet: `# Extracts 512-D unit embedding vector
@@ -119,15 +119,15 @@ verified = (cosine_sim >= COSINE_THRESHOLD)`,
     },
     {
       id: 5,
-      name: "Stage 5: Session & Challenge Validation",
+      name: "Stage 5: Session & duplicate validation",
       shortName: "5. Validation",
-      tagline: "Temporal freshness and deduplication check",
+      tagline: "Server time and one-attempt constraints",
       purpose:
-        "Verifies that the submitted challenge token matches the server's rolling 15s window, checks that the session remains in OPEN status, and enforces single-entry database uniqueness constraints.",
-      input: "Submitted token string, student ID, current session ID.",
-      output: "Cryptographic validation receipt (boolean valid, error reason if rejected).",
+        "Checks the server-controlled session state and enforces the unique student/session verification constraint.",
+      input: "Authenticated student ID and current session ID.",
+      output: "Accepted or rejected submission with an explicit reason.",
       failureConditions:
-        "Token expired (>15s window + grace period), duplicate student ID already committed, session finalized.",
+        "Session scheduled, closed, finalized, expired, or a prior attempt already exists.",
       status: "Implemented in Prototype",
       statusColor: "bg-emerald-100 text-emerald-950 border-emerald-300 font-bold",
       codeSnippet: `def validate_session_constraints(session_id, student_id, token):
@@ -140,11 +140,11 @@ verified = (cosine_sim >= COSINE_THRESHOLD)`,
       id: 6,
       name: "Stage 6: Multi-Factor Decision Policy",
       shortName: "6. Decision",
-      tagline: "Rule matrix classification into 4 definitive states",
+      tagline: "Separate evidence categories into a reviewable result",
       purpose:
-        "Synthesizes biometric cosine similarity, challenge validity, and image quality into one of four mutually exclusive, transparent operational states: VERIFIED, UNCERTAIN, REJECTED, or PENDING REVIEW.",
-      input: "Quality metric, cosine similarity, challenge match status, duplicate flag.",
-      output: "AttendanceStatusEnum: {VERIFIED, UNCERTAIN, REJECTED, PENDING_REVIEW}.",
+        "Keeps identity, liveness, and classroom context separate. All three must pass for CONFIRMED; insufficient evidence becomes PENDING_REVIEW and explicit failures become REJECTED.",
+      input: "Identity result, liveness result, classroom-context result, and session constraints.",
+      output: "CONFIRMED, PENDING_REVIEW, or REJECTED with reasons.",
       failureConditions: "Policy configuration missing or ambiguous threshold boundaries.",
       status: "Implemented in Prototype",
       statusColor: "bg-emerald-100 text-emerald-950 border-emerald-300 font-bold",
@@ -298,7 +298,7 @@ else:
               <span>ACADEMIC INTEGRITY NOTICE</span>
             </div>
             <p className="text-[11px] text-slate-800 font-medium leading-relaxed font-sans">
-              No fictional biometric confidence percentages or fabricated latency times are generated. The Attendrix pipeline isolates face candidate detection (YuNet) from feature vector comparison (ArcFace) to ensure scientific validity.
+              This presentation labels interface values as illustrative. The working pipeline keeps face detection, liveness, identity comparison, and classroom context separate, and returns an inconclusive review state when required models or evidence are unavailable.
             </p>
           </div>
         </div>

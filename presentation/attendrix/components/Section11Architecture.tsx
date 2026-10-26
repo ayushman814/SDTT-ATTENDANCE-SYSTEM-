@@ -49,12 +49,12 @@ export default function Section11Architecture() {
       id: "faculty",
       name: "Faculty Dashboard",
       layer: "Presentation Tier",
-      tech: "Next.js / React 19 / TypeScript",
+       tech: "React / Vite / TypeScript",
       icon: Monitor,
       color: "text-sky-800",
       borderColor: "border-sky-400",
       summary:
-        "Web application used by course professors to initialize attendance sessions, monitor live WebSocket submission feeds, broadcast the dynamic projector screen, and audit review cases.",
+        "Web application used by course teachers and controllers to initialize sessions, monitor realtime submission signals, manage registry actions, and audit review cases.",
       security: "Role-Based Access Control (RBAC) enforcing 'teacher' claims via Supabase JWT.",
     },
     {
@@ -78,32 +78,32 @@ export default function Section11Architecture() {
       color: "text-emerald-800",
       borderColor: "border-emerald-400",
       summary:
-        "High-concurrency async service handling concurrent student submission bursts (up to 240 students in 15 seconds), validating nonces, and orchestrating verification workers.",
+        "Async service handling session windows, protected image submissions, optional vision workers, review decisions, audit events, and report generation.",
       security: "CORS isolation, payload size quotas (10MB max), rate limiting per IP.",
     },
     {
       id: "challenge",
       name: "Dynamic Session Manager",
       layer: "Temporal Security Tier",
-      tech: "In-Memory Ticket Store & Redis TTL",
+       tech: "Server session clock & one-use WebSocket tickets",
       icon: Shield,
       color: "text-amber-800",
       borderColor: "border-amber-400",
-      summary:
-        "Generates rotating 6-character classroom challenge tokens every 15 seconds. Validates that incoming submissions align with the projector display window.",
-      security: "Server-side cryptographic token rotation, strict TTL grace window (15s + 5s).",
+       summary:
+        "Keeps session opening, deadlines, close/finalize transitions, and one-use realtime tickets authoritative on the server.",
+       security: "Server clock enforcement, role checks, idempotency constraints, and short-lived tickets.",
     },
     {
       id: "vision",
       name: "Vision Verification Engine",
       layer: "Inference Tier",
-      tech: "YuNet (Detection) + ArcFace (512-D)",
+       tech: "DeepFace (optional) + OpenCV + YOLO",
       icon: Cpu,
       color: "text-blue-800",
       borderColor: "border-blue-400",
-      summary:
-        "Executes YuNet landmark alignment on canonical 112×112 face crops, generates 512-dimensional normalized unit embeddings, and evaluates cosine similarity against registered reference.",
-      security: "Zero biometric crop persistence; memory-only processing, no training on student probes.",
+       summary:
+        "Keeps identity, guided liveness, and classroom-context evidence as separate checks. The configured face model is loaded lazily and fails closed when unavailable.",
+       security: "Encrypted server-side embeddings, private evidence storage, retention cleanup, and no raw liveness-frame persistence.",
     },
     {
       id: "database",
@@ -149,7 +149,7 @@ export default function Section11Architecture() {
           </span>
         </h2>
         <p className="text-base sm:text-lg text-slate-700 font-medium">
-          Inspect how the Flutter mobile client, Next.js faculty console, FastAPI backend, YuNet/ArcFace inference worker, and PostgreSQL storage interact with end-to-end security guarantees.
+           Inspect how the Flutter mobile client, React/Vite dashboard, FastAPI backend, optional vision models, and PostgreSQL storage interact with explicit review boundaries.
         </p>
       </div>
 
@@ -331,7 +331,7 @@ export default function Section11Architecture() {
           <div className="space-y-2 text-xs text-emerald-900 leading-relaxed font-sans">
             <h4 className="text-sm font-bold text-emerald-950">Biometric Privacy &amp; Data Governance Principles</h4>
             <p className="text-emerald-800">
-              The Attendrix system is designed in compliance with strict privacy safeguards: dynamic challenge tokens are validated exclusively on the server, raw face photos are processed in memory and never committed to public unencrypted repositories, and institutional consent is mandatory before enrolling student reference vectors.
+              Attendrix keeps biometric representations encrypted on the server, stores classroom evidence in a private bucket, expires image access, and preserves manual review for uncertain outcomes. It is a prototype and does not claim perfect spoof prevention or legal compliance.
             </p>
           </div>
         </div>

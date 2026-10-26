@@ -388,10 +388,10 @@ export default function LectureHallScene({
 
       ctxR.fillStyle = "#ffffff";
       ctxR.font = "15px monospace";
-      ctxR.fillText("1. Dynamic Nonce Broadcast (TTL 15s)", 25, 85);
-      ctxR.fillText("2. Optical Screen Sync: 9K4-PX2", 25, 115);
-      ctxR.fillText("3. BLE RSSI Triangulation (Zone A/B/C)", 25, 140);
-      ctxR.fillText("4. SHA-256 HMAC Reconcile Pipeline", 25, 165);
+      ctxR.fillText("1. Server-Timed Session Window", 25, 85);
+      ctxR.fillText("2. Guided Identity + Liveness Frames", 25, 115);
+      ctxR.fillText("3. Rear-Camera Classroom Context", 25, 140);
+      ctxR.fillText("4. Audited Review and Finalization", 25, 165);
 
       ctxR.strokeStyle = "#f59e0b";
       ctxR.lineWidth = 2;
@@ -467,7 +467,7 @@ export default function LectureHallScene({
 
     ctx.fillStyle = "#0f172a";
     ctx.font = "bold 52px monospace";
-    ctx.fillText("CODE: 9K4-PX2", 90, 215);
+    ctx.fillText("SESSION: SERVER-TIMED", 90, 215);
 
     const ttlSeconds = Math.max(1, 15 - Math.floor((timeRatio * 4) % 15));
     ctx.fillStyle = "#059669";
@@ -1630,7 +1630,7 @@ export default function LectureHallScene({
 
           <div className="w-full my-auto overflow-x-auto py-4 flex flex-col items-center">
             <div className="w-3/4 max-w-xl mx-auto mb-4 py-2 px-4 rounded-lg bg-amber-50 border border-amber-300 text-center text-xs font-mono text-amber-950 font-bold">
-              [ FRONT PODIUM & DYNAMIC SCREEN • CHALLENGE CODE: 9K4-PX2 ]
+              [ FRONT PODIUM & CLASSROOM CONTEXT • ILLUSTRATIVE SCENE ]
             </div>
             <div className="flex flex-col gap-1.5 items-center">
               {Array.from({ length: 12 }).map((_, r) => {

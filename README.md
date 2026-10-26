@@ -1,5 +1,12 @@
 # Attendrix — Continuous Sweep Classroom Attendance Verification
 
+> **Also in this repo:** `apps/panorama/` — a separate panorama-selfie
+> attendance product (FastAPI + React PWA) where students mark attendance by
+> uploading a panorama photo that is verified automatically (self + neighbour
+> + lecturer in frame). See `apps/panorama/ARCHITECTURE.md` and
+> `apps/panorama/api/README.md` for setup, demo accounts, and the real
+> verification pipeline.
+
 Attendrix is an attendance verification system built for real lecture halls. It eliminates proxy attendance by having students perform a **single, continuous front-camera sweep** (from a selfie beside classmates across to the lecturer on stage). Verification is entirely server-authoritative, governed by an ordered 9-rule computer vision pipeline, with a dedicated review queue for flagged attempts.
 
 ---
