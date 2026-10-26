@@ -109,7 +109,7 @@ export default function Section13Closing({
           <div className="text-slate-300">|</div>
 
           <div className="text-slate-600">
-            FastAPI • Next.js • Flutter • ArcFace • YuNet
+            FastAPI • React/Vite • Flutter • OpenCV • PostgreSQL
           </div>
         </div>
       </div>

@@ -1,40 +1,30 @@
 # Delivery checklist and status
 
-## Flutter teacher/student application — prototype implemented
+## Implemented
 
-- Teacher sign-in, class/session workflow, simulated image capture, pending roster review, manual present/absent corrections, explicit finalization, and audit visibility are implemented.
-- Student sign-in, own attendance history and summary, and private in-app notification feed are implemented.
-- Android, iOS, and Web project scaffolding is generated. Flutter analysis, widget smoke test, and Flutter Web build pass.
-- **Not implemented:** facial recognition, actual student matching, demographic accuracy claims, and specific automated detection of poor lighting, occlusion, unidentified people, or duplicates. The capture endpoint returns synthetic suggestions only. The user/teacher must review and confirm attendance. An Android APK/device camera test remains unavailable because the sandbox has no Android SDK or mobile device.
+- Existing Flutter, React/TypeScript, FastAPI, and Supabase stack reused.
+- Registration-ID/email login with Supabase Auth; provisioned backend profiles determine roles. Demo credentials are no longer prefilled in the UI.
+- Professor session creation supports a title, opening time, deadline/duration, visible-person threshold, and optional normalized stage region. Server time enforces scheduled/open/closed state, early-open, close, and late-upload rejection.
+- Student panorama workflow in web and mobile: framing instructions, preview/retake, image submission, progress/confirmation, timed status, own history, and in-app notifications.
+- Real image validation, quality checks, and pretrained person detection for scene-level evidence; no fake success, face recognition, embeddings, identity matching, lecturer identity, or orientation claims.
+- Private Supabase Storage, metadata-free re-encoded images, professor-scoped expiring image URLs, review UI/API with required reasons, manual attendance, provenance tracking, audit, CSV/printable report, and app/API realtime signals.
+- Hourly server worker purges image objects after `ATTENDANCE_IMAGE_RETENTION_DAYS` (default 30) and clears the corresponding Storage path/hash while keeping attendance and review metadata.
+- Legacy simulated capture endpoint is disabled with HTTP 410. Guarded development account seeder reads passwords from environment variables.
+- Setup/API/privacy/requirements documentation updated for Supabase and the scene-only model limits.
+- Optional model-backed face enrollment, guided liveness, separate identity/context verification results, controller registration/import endpoints, real XLSX workbook exports, cross-platform launcher, and a rendered product walkthrough were added.
 
-## Shared API and audit trail — prototype implemented
+## Verification in this work session
 
-- Flutter and React dashboard use the shared FastAPI REST API, SQLite demo database, and WebSocket event stream.
-- Session creation, simulated capture, changes, and finalization are auditable. Students can read only their own attendance and notifications; teacher-only roster/report/audit/write routes are enforced by the API.
-- Captures are not persisted by the application; no face embeddings or biometric templates are generated or stored. In-app notifications only; no email, SMS, or push integration is configured.
+- Backend tests: `18 passed`; Python compilation passed. The suite uses fake Supabase clients for session-time and retention cases and a deterministic injected detector; it does not download model weights.
+- Product video: `artifacts/attendrix_product_walkthrough.mp4` rendered successfully at 1280×720, 24fps, 840 frames.
+- Dashboard `npm run build`: TypeScript check and Vite production build passed after the final cleanup.
+- Flutter/Dart analyzer and widget tests could not run because neither `flutter` nor `dart` is installed in the current environment.
+- Dashboard/presentation builds could not run because Node.js/npm are not installed in the current environment.
+- No live Supabase project/credentials are available, so migrations, Auth provisioning, private Storage upload, signed image previews, realtime network behavior, and end-to-end session testing are not claimed.
 
-## Responsive web dashboard and exports — prototype implemented
+## Remaining external/deployment requirements
 
-- Teacher dashboard supports classes, session start/review/finalize, history, audit, and session reports.
-- Session CSV is exported from backend report data. The print-friendly HTML report can be printed/saved as PDF from a browser; the backend does not itself render PDF files.
-- Student dashboard displays that signed-in student's own summary/history and notification feed. Offline/demo fallback data for the two student accounts is kept separate.
-
-## Realtime app/dashboard synchronization — implemented in source
-
-- Authenticated short-lived single-use WebSocket tickets are used. Session, attendance, finalization, and notification events cause affected dashboard/mobile views to refetch current API data, including after reconnect.
-- Backend WebSocket/API tests pass. Dashboard production build passes. No separate external production deployment, real-network mobile device test, or public browser end-to-end session was performed in this sandbox.
-
-## Privacy, security, and deployment — prototype limits documented
-
-- A manual teacher-review path exists; biometric recognition/enrollment and production operation are out of scope. Do not use real student information or run this as a live school attendance system.
-- Demo passwords, development secret/database defaults, local CORS configuration, and non-encrypted SQLite are development-only. TLS/WSS, production authentication, encryption/key management, retention/deletion policy, backup/monitoring, legal/privacy/fairness review, and production hosting still require separate implementation and review.
-- Requested accuracy/latency thresholds are evaluation targets only. No performance, accuracy, consent, or fairness evaluation is claimed.
-
-## Checks completed
-
-- `flutter analyze`: clean.
-- `flutter test`: widget smoke test passed.
-- `flutter build web`: succeeded.
-- Backend `pytest -q`: 4 passed.
-- Dashboard `npm run build`: succeeded after API/real-time integration changes.
-- Android APK and iOS native builds are not claimed: Android SDK/device unavailable in this sandbox; iOS build requires macOS/Xcode.
+- Run the fresh schema or upgrade migration against a real Supabase project, configure server-only secrets and CORS, provision real profiles/roles/enrollments, and confirm private bucket lifecycle.
+- Review the Ultralytics/model license and weights provenance, then evaluate quality thresholds and scene heuristics in real classroom conditions.
+- Complete institutional/legal/privacy/security/fairness review before using real student records or images. Configure production TLS/WSS, backups, monitoring, incident response, and approved deletion policy.
+- Native Android device camera behavior and iOS builds need platform toolchains/devices. No accuracy, latency, fairness, legal-compliance, or production-readiness claim is made.

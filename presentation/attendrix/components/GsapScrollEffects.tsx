@@ -13,7 +13,10 @@ export default function GsapScrollEffects() {
     if (prefersReducedMotion) return;
 
     // Small delay to ensure DOM is fully ready
-    const timer = setTimeout(() => {
+    let timer: number | undefined;
+    const refreshOnLoad = () => ScrollTrigger.refresh();
+    const context = gsap.context(() => {
+    timer = window.setTimeout(() => {
       // 1. Section Header Reveals
       const sectionHeaders = document.querySelectorAll("h2, .section-header");
       sectionHeaders.forEach((el) => {
@@ -70,11 +73,35 @@ export default function GsapScrollEffects() {
           }
         );
       }
+
+      // Keep the dashboard narrative readable while its sample interface
+      // transitions with scroll. Pin only on larger screens to avoid trapping
+      // touch users in a long mobile animation.
+      const dashboardPanel = document.querySelector("#dashboard .glass-panel");
+      if (dashboardPanel && window.innerWidth > 900) {
+        gsap.to(dashboardPanel, {
+          y: -24,
+          ease: "none",
+          scrollTrigger: {
+            trigger: "#dashboard",
+            start: "top 12%",
+            end: "+=520",
+            pin: true,
+            scrub: 1,
+            invalidateOnRefresh: true,
+          },
+        });
+      }
+      ScrollTrigger.refresh();
     }, 150);
 
+    window.addEventListener("load", refreshOnLoad);
+    });
+
     return () => {
-      clearTimeout(timer);
-      ScrollTrigger.getAll().forEach((st) => st.kill());
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener("load", refreshOnLoad);
+      context.revert();
     };
   }, []);
 

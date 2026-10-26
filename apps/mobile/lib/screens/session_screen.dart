@@ -1,8 +1,7 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
+import '../widgets/teacher_submission_review.dart';
 
 class SessionScreen extends StatefulWidget {
   const SessionScreen({super.key, required this.state});
@@ -13,7 +12,6 @@ class SessionScreen extends StatefulWidget {
 }
 
 class _SessionScreenState extends State<SessionScreen> {
-  final ImagePicker picker = ImagePicker();
   String searchQuery = '';
   final searchController = TextEditingController();
 
@@ -181,208 +179,11 @@ class _SessionScreenState extends State<SessionScreen> {
 
             const SizedBox(height: 16),
 
-            // Camera Capture Card (only when open)
-            if (session.isOpen)
-              FadeSlideIn(
-                delay: const Duration(milliseconds: 60),
-                child: AppCard(
-                  padding: const EdgeInsets.all(20),
-                  borderColor: AppColors.secondary.withValues(alpha: 0.3),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              gradient: AppColors.accentGradient,
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: const Icon(
-                              Icons.camera_alt_rounded,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Camera Roll Call Assist',
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                ),
-                                const Text(
-                                  'Instant simulated suggestions for review',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.slate,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      const Text(
-                        'Take one classroom photo. Suggestions are synthetic and must be confirmed by the teacher. No photos are retained.',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: AppColors.slate,
-                          height: 1.4,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      AnimatedPressable(
-                        onTap: widget.state.busy ? null : _capture,
-                        child: Container(
-                          height: 48,
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [
-                                AppColors.secondary,
-                                AppColors.primary,
-                              ],
-                            ),
-                            borderRadius: BorderRadius.circular(14),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.secondary.withValues(alpha: 0.3),
-                                blurRadius: 14,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: Center(
-                            child: widget.state.busy
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor:
-                                          AlwaysStoppedAnimation<Color>(Colors.white),
-                                    ),
-                                  )
-                                : const Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.camera_enhance_rounded,
-                                          color: Colors.white, size: 20),
-                                      SizedBox(width: 8),
-                                      Text(
-                                        'Open Camera Capture',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w800,
-                                          fontSize: 14.5,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // Suggestions List Card
-            if (widget.state.suggestions.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              FadeSlideIn(
-                delay: const Duration(milliseconds: 100),
-                child: AppCard(
-                  padding: const EdgeInsets.all(18),
-                  borderColor: AppColors.emeraldBorder,
-                  backgroundColor: AppColors.emeraldBg.withValues(alpha: 0.5),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.auto_awesome_rounded,
-                              color: AppColors.emerald, size: 20),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '${widget.state.suggestions.length} Review Suggestions',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                fontSize: 15,
-                                color: AppColors.ink,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      ...widget.state.suggestions.map((sug) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: AppColors.emeraldBorder),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          sug.studentName,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w800,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        Text(
-                                          '${(sug.confidence * 100).toStringAsFixed(0)}% simulated confidence',
-                                          style: const TextStyle(
-                                            fontSize: 11.5,
-                                            color: AppColors.slate,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  FilledButton.icon(
-                                    onPressed: () async {
-                                      await widget.state.setAttendance(
-                                          sug.studentId, 'present');
-                                      if (mounted) setState(() {});
-                                    },
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor: AppColors.emerald,
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 8),
-                                      minimumSize: Size.zero,
-                                    ),
-                                    icon: const Icon(Icons.check_rounded, size: 16),
-                                    label: const Text('Mark Present',
-                                        style: TextStyle(fontSize: 12)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-
             const SizedBox(height: 24),
+
+            TeacherSubmissionReview(state: widget.state, sessionId: session.id),
+
+            const SizedBox(height: 8),
 
             // Roster Header & Search
             FadeSlideIn(
@@ -492,7 +293,7 @@ class _SessionScreenState extends State<SessionScreen> {
                             StatusChip(status: record.status, compact: true),
                           ],
                         ),
-                        if (session.isOpen) ...[
+                        if (session.status == 'open' || session.status == 'closed') ...[
                           const SizedBox(height: 10),
                           const Divider(height: 1, color: AppColors.border),
                           const SizedBox(height: 8),
@@ -552,7 +353,7 @@ class _SessionScreenState extends State<SessionScreen> {
           ],
         ),
       ),
-      bottomSheet: session.isOpen
+      bottomSheet: session.status != 'finalized'
           ? Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
               decoration: BoxDecoration(
@@ -568,7 +369,7 @@ class _SessionScreenState extends State<SessionScreen> {
               ),
               child: SafeArea(
                 child: AnimatedPressable(
-                  onTap: widget.state.busy ? null : _finalize,
+                  onTap: widget.state.busy ? null : session.status == 'scheduled' ? _openEarly : session.isOpen ? _closeWindow : _finalize,
                   child: Container(
                     height: 52,
                     decoration: BoxDecoration(
@@ -607,9 +408,13 @@ class _SessionScreenState extends State<SessionScreen> {
                                     color: Colors.white, size: 20),
                                 const SizedBox(width: 8),
                                 Text(
-                                  pendingCount == 0
-                                      ? 'Finalize Attendance Session'
-                                      : 'Finalize & Mark $pendingCount Absent',
+                                  session.status == 'scheduled'
+                                      ? 'Open Attendance Window Now'
+                                      : session.isOpen
+                                      ? 'Close Submission Window'
+                                      : pendingCount == 0
+                                          ? 'Finalize Attendance Session'
+                                          : 'Finalize & Mark $pendingCount Absent',
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.w800,
@@ -627,40 +432,39 @@ class _SessionScreenState extends State<SessionScreen> {
     );
   }
 
-  Future<void> _capture() async {
-    XFile? picked;
+
+
+  Future<void> _openEarly() async {
+    final session = widget.state.activeSession;
+    if (session == null) return;
     try {
-      picked = await picker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 80,
-        maxWidth: 1600,
-      );
-      if (picked == null) return;
-      await widget.state.uploadCapture(File(picked.path));
-      if (mounted && widget.state.error != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(widget.state.error!),
-            backgroundColor: AppColors.rose,
-          ),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Camera capture was cancelled or unavailable. Manual roll call remains ready.'),
-          ),
-        );
-      }
-    } finally {
-      if (picked != null) {
-        try {
-          final file = File(picked.path);
-          if (await file.exists()) await file.delete();
-        } catch (_) {}
-      }
+      await widget.state.openAttendanceWindow(session.id);
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _closeWindow() async {
+    final session = widget.state.activeSession;
+    if (session == null) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Close submission window?'),
+        content: const Text('Students will no longer be able to submit images. You can still review submissions and correct the roster before finalizing.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep open')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Close window')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await widget.state.closeAttendanceWindow(session.id);
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
     }
   }
 

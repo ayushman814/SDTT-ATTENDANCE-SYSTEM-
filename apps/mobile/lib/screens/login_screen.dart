@@ -5,20 +5,27 @@ import '../panorama/panorama_home_screen.dart';
 import '../widgets/app_widgets.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.state});
+  const LoginScreen({super.key, required this.state, this.role});
   final AppState state;
+  final String? role;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final emailController = TextEditingController(text: 'teacher@demo.edu');
-  final passwordController = TextEditingController(text: 'teach123');
+  final emailController = TextEditingController();
+  final passwordController = TextEditingController();
   final formKey = GlobalKey<FormState>();
 
   bool obscure = true;
   int selectedRoleIndex = 0; // 0: Teacher, 1: Student
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.role == 'student') selectedRoleIndex = 1;
+  }
 
   @override
   void dispose() {
@@ -28,16 +35,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _selectRole(int index) {
-    setState(() {
-      selectedRoleIndex = index;
-      if (index == 0) {
-        emailController.text = 'teacher@demo.edu';
-        passwordController.text = 'teach123';
-      } else {
-        emailController.text = 'student1@demo.edu';
-        passwordController.text = 'student123';
-      }
-    });
+    setState(() => selectedRoleIndex = index);
   }
 
   Future<void> _login() async {
@@ -45,6 +43,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final success = await widget.state.login(
       emailController.text,
       passwordController.text,
+      expectedRole: selectedRoleIndex == 0 ? 'teacher' : 'student',
     );
     if (!success && mounted && widget.state.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -80,7 +79,7 @@ class _LoginScreenState extends State<LoginScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Set the API endpoint. For USB debugging, use localhost (with adb reverse). For Wi-Fi, enter your PC\'s LAN IP (e.g. http://10.0.4.99:8000/api).',
+              'The app uses the hosted Render API by default. Change this only if your administrator gave you a different API endpoint.',
               style: TextStyle(fontSize: 13, color: AppColors.slate),
             ),
             const SizedBox(height: 16),
@@ -88,7 +87,7 @@ class _LoginScreenState extends State<LoginScreen> {
               controller: controller,
               decoration: const InputDecoration(
                 labelText: 'API Base URL',
-                hintText: 'http://localhost:8000/api',
+                hintText: 'https://sdtt-attendance-system.onrender.com/api',
                 isDense: true,
               ),
             ),
@@ -239,17 +238,17 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                             const SizedBox(height: 20),
 
-                            // Email input
+                            // Registration ID or email input
                             TextFormField(
                               controller: emailController,
-                              keyboardType: TextInputType.emailAddress,
+                              keyboardType: TextInputType.text,
                               textInputAction: TextInputAction.next,
                               decoration: const InputDecoration(
-                                labelText: 'Email address',
+                                labelText: 'Registration ID or email',
                                 prefixIcon: Icon(Icons.alternate_email_rounded),
                               ),
-                              validator: (v) => v == null || !v.contains('@')
-                                  ? 'Enter a valid email address'
+                              validator: (v) => v == null || v.trim().isEmpty
+                                  ? 'Enter your registered ID or email'
                                   : null,
                             ),
                             const SizedBox(height: 14),
@@ -338,28 +337,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                   const SizedBox(height: 22),
 
-                  // Demo accounts quick-switch pills
-                  FadeSlideIn(
-                    delay: const Duration(milliseconds: 240),
-                    child: Center(
-                      child: Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        alignment: WrapAlignment.center,
-                        children: [
-                          _QuickPill(
-                            label: 'Teacher demo',
-                            onTap: () => _selectRole(0),
-                            isActive: selectedRoleIndex == 0,
-                          ),
-                          _QuickPill(
-                            label: 'Student demo',
-                            onTap: () => _selectRole(1),
-                            isActive: selectedRoleIndex == 1,
-                          ),
-                        ],
-                      ),
-                    ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14),
+                    child: Text('Sign in with your school-provisioned account. Select the role attached to your registration before continuing.', textAlign: TextAlign.center),
                   ),
 
                   const SizedBox(height: 16),
@@ -424,7 +404,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           SizedBox(width: 8),
                           Flexible(
                             child: Text(
-                              'Demo only • no face recognition • no photo or template retention • in-app notifications only',
+                              'Scene evidence only • no identity recognition or biometric templates • private image review • in-app notifications only',
                               style: TextStyle(
                                 fontSize: 11.5,
                                 fontWeight: FontWeight.w600,

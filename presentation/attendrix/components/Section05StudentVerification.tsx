@@ -29,7 +29,7 @@ interface ScenarioConfig {
   challengeMatch: boolean;
   cosineSimilarity: number;
   isDuplicate: boolean;
-  outcomeStatus: "VERIFIED" | "UNCERTAIN" | "REJECTED" | "PENDING REVIEW";
+  outcomeStatus: "CONFIRMED" | "UNCERTAIN" | "REJECTED" | "PENDING REVIEW";
   outcomeMessage: string;
   outcomeExplanation: string;
 }
@@ -44,10 +44,10 @@ const scenarios: Record<ScenarioKey, ScenarioConfig> = {
     challengeMatch: true,
     cosineSimilarity: 0.86,
     isDuplicate: false,
-    outcomeStatus: "VERIFIED",
+    outcomeStatus: "CONFIRMED",
     outcomeMessage: "All configured demo checks passed.",
     outcomeExplanation:
-      "Token matched current 15s window, 112x112 face crop met sharpness threshold, ArcFace cosine similarity (0.86) exceeded 0.72 verification threshold.",
+      "Illustrative demo: identity, guided liveness, and classroom-context checks all pass. Production outcomes come from the configured server pipeline.",
   },
   poor_quality: {
     key: "poor_quality",
@@ -65,8 +65,8 @@ const scenarios: Record<ScenarioKey, ScenarioConfig> = {
   },
   expired_token: {
     key: "expired_token",
-    label: "3. Expired Challenge Token",
-    badge: "TOKEN EXPIRED",
+    label: "3. Closed Session Window",
+    badge: "SESSION CLOSED",
     badgeColor: "bg-rose-100 text-rose-900 border-rose-300 font-bold",
     qualityScore: 91,
     challengeMatch: false,
@@ -75,7 +75,7 @@ const scenarios: Record<ScenarioKey, ScenarioConfig> = {
     outcomeStatus: "REJECTED",
     outcomeMessage: "Challenge expired. Refresh the session evidence.",
     outcomeExplanation:
-      "The submitted challenge token was issued 46 seconds prior (exceeding 15s TTL + 5s network grace). Rejected to prevent delayed relay submissions.",
+      "The server rejects submissions when the attendance window is closed or expired. Client timestamps cannot override the session state.",
   },
   duplicate: {
     key: "duplicate",
@@ -103,7 +103,7 @@ const scenarios: Record<ScenarioKey, ScenarioConfig> = {
     outcomeStatus: "PENDING REVIEW",
     outcomeMessage: "No automatic final decision. Teacher review required.",
     outcomeExplanation:
-      "Cosine similarity of 0.58 falls in the ambiguous zone (0.50–0.71). Rather than unfairly marking the student absent, the case is routed to the instructor's review queue.",
+      "The illustrative identity evidence is inconclusive. Rather than inventing a final result, the case is routed to the teacher review queue.",
   },
 };
 
@@ -126,7 +126,7 @@ export default function Section05StudentVerification() {
         soundManager.playScan();
         if (step === 4) {
           setIsRunning(false);
-          if (scenario.outcomeStatus === "VERIFIED") {
+           if (scenario.outcomeStatus === "CONFIRMED") {
             soundManager.playSuccess();
             confetti({
               particleCount: 55,
@@ -164,8 +164,8 @@ export default function Section05StudentVerification() {
           </span>
         </h2>
         <p className="text-base sm:text-lg text-slate-700 font-medium">
-          Explore how an individual student’s attendance evidence is evaluated.
-          Switch between 5 edge-case scenarios to observe how the decision engine handles lighting, tokens, replays, and borderline matches.
+           Explore how an individual student’s attendance evidence is evaluated.
+           Switch between 5 illustrative scenarios to observe quality failures, closed sessions, duplicate prevention, and pending review.
         </p>
       </div>
 
@@ -236,15 +236,15 @@ export default function Section05StudentVerification() {
               </div>
             </div>
 
-            {/* Bottom Challenge Token Banner */}
+             {/* Server session state banner */}
             <div className="absolute bottom-3 inset-x-3 bg-slate-900/95 border border-slate-800 rounded-lg p-2 flex items-center justify-between text-xs font-mono">
-              <span className="text-slate-300 font-bold">Classroom Code:</span>
+                 <span className="text-slate-300 font-bold">Session Window:</span>
               <span
                 className={`font-bold ${
                   scenario.challengeMatch ? "text-amber-300" : "text-rose-400 line-through"
                 }`}
               >
-                {scenario.challengeMatch ? "9K4-PX2 (MATCHED)" : "4M1-ZX8 (EXPIRED)"}
+                 {scenario.challengeMatch ? "OPEN (SERVER CHECK)" : "CLOSED / EXPIRED"}
               </span>
             </div>
           </div>
@@ -313,13 +313,13 @@ export default function Section05StudentVerification() {
             >
               <div className="flex items-center gap-2.5">
                 <Clock className="w-4 h-4" />
-                <span>1. Session Token &amp; Replay Window</span>
+                <span>1. Session State &amp; Duplicate Policy</span>
               </div>
               <span className="font-bold">
                 {currentStepIndex >= 1
                   ? scenario.challengeMatch
                     ? "PASS (TTL Valid)"
-                    : "FAIL (Token Expired)"
+                    : "FAIL (Window Closed)"
                   : "WAITING"}
               </span>
             </div>
@@ -361,11 +361,11 @@ export default function Section05StudentVerification() {
             >
               <div className="flex items-center gap-2.5">
                 <Fingerprint className="w-4 h-4" />
-                <span>3. ArcFace 1:1 Cosine Similarity</span>
+                 <span>3. Configured Identity Model Result</span>
               </div>
               <span className="font-bold">
                 {currentStepIndex >= 3
-                  ? `${scenario.cosineSimilarity.toFixed(2)} (Threshold: 0.72)`
+                     ? `${scenario.cosineSimilarity.toFixed(2)} illustrative model output`
                   : "WAITING"}
               </span>
             </div>
@@ -397,7 +397,7 @@ export default function Section05StudentVerification() {
           {/* Final Outcome Box */}
           <div
             className={`p-5 rounded-2xl border transition-all ${
-              scenario.outcomeStatus === "VERIFIED"
+               scenario.outcomeStatus === "CONFIRMED"
                 ? "bg-emerald-50 border-emerald-300 text-emerald-900"
                 : scenario.outcomeStatus === "PENDING REVIEW"
                 ? "bg-amber-50 border-amber-300 text-amber-900"
@@ -408,7 +408,7 @@ export default function Section05StudentVerification() {
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-mono uppercase tracking-wider font-bold">
-                FINAL CLASSIFICATION: {scenario.outcomeStatus}
+               ILLUSTRATIVE CLASSIFICATION: {scenario.outcomeStatus}
               </span>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/70 border border-current font-semibold">
                 SIMULATED DEMO RESULT

@@ -4,8 +4,20 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../widgets/app_widgets.dart';
 import '../panorama/panorama_home_screen.dart';
+import '../widgets/student_submission_card.dart';
 import 'notifications_screen.dart';
 import 'session_screen.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildTheme(),
+      home: HomeScreen(state: AppState()),
+    ),
+  );
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.state});
@@ -275,7 +287,83 @@ class TeacherHome extends StatelessWidget {
   }
 
   Future<void> _start(BuildContext context, Classroom classroom) async {
-    final ok = await state.startSession(classroom.id);
+    final titleController = TextEditingController(text: '${classroom.code} attendance');
+    final leftController = TextEditingController(text: '40');
+    final topController = TextEditingController(text: '0');
+    final widthController = TextEditingController(text: '25');
+    final heightController = TextEditingController(text: '100');
+    final peopleController = TextEditingController(text: '2');
+    var opensAt = DateTime.now();
+    var durationMinutes = 10;
+    final configured = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Schedule attendance'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Session title')),
+              const SizedBox(height: 12),
+              Text('Opens ${DateFormat('MMM d, yyyy · h:mm a').format(opensAt)}'),
+              TextButton.icon(
+                icon: const Icon(Icons.schedule),
+                label: const Text('Choose opening date and time'),
+                onPressed: () async {
+                  final day = await showDatePicker(context: dialogContext, initialDate: opensAt, firstDate: DateTime.now().subtract(const Duration(days: 1)), lastDate: DateTime.now().add(const Duration(days: 365)));
+                  if (day == null || !dialogContext.mounted) return;
+                  final time = await showTimePicker(context: dialogContext, initialTime: TimeOfDay.fromDateTime(opensAt));
+                  if (time == null) return;
+                  setDialogState(() => opensAt = DateTime(day.year, day.month, day.day, time.hour, time.minute));
+                },
+              ),
+              const SizedBox(height: 8),
+              const Text('Attendance window'),
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (final minutes in [10, 30, 60, 120])
+                    ChoiceChip(
+                      label: Text('$minutes min'),
+                      selected: durationMinutes == minutes,
+                      onSelected: (_) => setDialogState(() => durationMinutes = minutes),
+                    ),
+                ],
+              ),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Scene verification settings'),
+                subtitle: const Text('Adjust the stage region to match your classroom panorama.'),
+                children: [
+                  Row(children: [Expanded(child: TextField(controller: leftController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Left %'))), const SizedBox(width: 8), Expanded(child: TextField(controller: topController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Top %')))]),
+                  Row(children: [Expanded(child: TextField(controller: widthController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Width %'))), const SizedBox(width: 8), Expanded(child: TextField(controller: heightController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Height %')))]),
+                  TextField(controller: peopleController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Minimum nearby people (1–30)')),
+                  const Text('The detector reports scene evidence only; it does not identify the lecturer or prove that the region is a stage.', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Create session')),
+          ],
+        ),
+      ),
+    );
+    if (configured != true) { titleController.dispose(); leftController.dispose(); topController.dispose(); widthController.dispose(); heightController.dispose(); peopleController.dispose(); return; }
+    final title = titleController.text.trim().isEmpty ? '${classroom.code} attendance' : titleController.text.trim();
+    titleController.dispose();
+    final left = double.tryParse(leftController.text);
+    final top = double.tryParse(topController.text);
+    final width = double.tryParse(widthController.text);
+    final height = double.tryParse(heightController.text);
+    final people = int.tryParse(peopleController.text);
+    leftController.dispose(); topController.dispose(); widthController.dispose(); heightController.dispose(); peopleController.dispose();
+    if (!context.mounted) return;
+    if (left == null || top == null || width == null || height == null || people == null || left < 0 || top < 0 || width <= 0 || height <= 0 || left + width > 100 || top + height > 100 || people < 1 || people > 30) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid stage rectangle within 0–100% and a nearby-people count from 1 to 30.')));
+      return;
+    }
+    final ok = await state.startSession(classroom.id, title: title, opensAt: opensAt, duration: Duration(minutes: durationMinutes), stageRegion: {'x': left / 100, 'y': top / 100, 'width': width / 100, 'height': height / 100}, minimumPeopleVisible: people);
     if (!context.mounted) return;
     if (ok) {
       Navigator.of(context).push(
@@ -680,6 +768,8 @@ class _StudentHomeState extends State<StudentHome> {
                         color: AppColors.muted,
                       ),
                     ),
+                    if (state.user?.registrationId != null)
+                      Text('Student ID: ${state.user!.registrationId}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
                   ],
                 ),
               ],
@@ -687,6 +777,8 @@ class _StudentHomeState extends State<StudentHome> {
           ),
 
           const SizedBox(height: 18),
+
+          StudentSubmissionCard(state: state),
 
           // Hero Attendance Card with Circular Gauge & Counters
           FadeSlideIn(

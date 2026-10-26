@@ -9,27 +9,27 @@ export default function Section03Concept() {
 
   const pillars = [
     {
-      title: "Faculty Session Control",
+      title: "Teacher Session Control",
       icon: Monitor,
       color: "text-amber-700",
       borderColor: "border-amber-400",
-      desc: "Authorized instructor opens the class session, locks the roster, and starts the synchronized classroom challenge.",
+      desc: "An authorized teacher opens the server-timed session, loads the assigned roster, and configures contextual evidence settings.",
       role: "Initiation & Authority",
     },
     {
-      title: "Dynamic Classroom Challenge",
+      title: "Server-Timed Window",
       icon: Lock,
       color: "text-orange-700",
       borderColor: "border-orange-400",
-      desc: "The projector displays a short-lived token (15s rotating key). Required in the student's submission payload.",
-      role: "Classroom Proximity Indicator",
+      desc: "The API controls scheduled, open, closed, and finalized states. Client clocks cannot authorize a late upload.",
+      role: "Session Authority",
     },
     {
       title: "Student 1:1 Selfie Verification",
       icon: Smartphone,
       color: "text-amber-700",
       borderColor: "border-amber-400",
-      desc: "Student captures an authenticated selfie. 1-to-1 match against registered institutional photo via ArcFace vector embedding.",
+      desc: "Student completes controller-authorized enrollment. A server-side face model compares the guided front-camera evidence with the encrypted enrolled representation.",
       role: "Biometric Identity Grounding",
     },
     {
@@ -37,7 +37,7 @@ export default function Section03Concept() {
       icon: Eye,
       color: "text-amber-700",
       borderColor: "border-amber-400",
-      desc: "Where supported, wide camera establishes physical room occupancy & seating density via YuNet person detection.",
+      desc: "A rear-camera classroom image provides contextual scene evidence. It cannot prove an exact seat or identify every person.",
       role: "Environmental Context",
     },
     {
@@ -45,7 +45,7 @@ export default function Section03Concept() {
       icon: Cpu,
       color: "text-orange-700",
       borderColor: "border-orange-400",
-      desc: "FastAPI server validates session timestamps, challenge TTL, replay prevention, and duplicate student submissions.",
+      desc: "FastAPI validates authorization, server time, image quality, duplicate submissions, separate evidence results, and audit state.",
       role: "Anti-Replay & Deduplication",
     },
     {
@@ -53,7 +53,7 @@ export default function Section03Concept() {
       icon: UserCheck,
       color: "text-amber-700",
       borderColor: "border-amber-400",
-      desc: "Uncertain scores or low-light captures enter a teacher queue. System never marks uncertain records as unappealable absences.",
+      desc: "Inconclusive evidence and unavailable model results enter a teacher queue. The system keeps a reviewable pending state.",
       role: "Ethical Fail-Safe",
     },
   ];
@@ -73,8 +73,8 @@ export default function Section03Concept() {
           </span>
         </h2>
         <p className="text-base sm:text-lg text-slate-700 font-medium">
-          Attendrix replaces fragile single-point assumptions with a multi-source corroboration pipeline.
-          Neither a code nor a selfie alone proves presence—the backend cross-references evidence together.
+           Attendrix replaces fragile single-point assumptions with separate, reviewable evidence categories.
+           Identity, liveness, and classroom context are evaluated independently by the backend.
         </p>
       </div>
 
@@ -85,7 +85,7 @@ export default function Section03Concept() {
             <Sparkles className="w-4 h-4 text-amber-600" />
             <span>DUAL-STREAM EVIDENCE CONVERGENCE</span>
           </span>
-          <span className="text-slate-700 hidden sm:inline font-bold">REAL CLASSROOM CORROBORATION</span>
+              <span className="text-slate-700 hidden sm:inline font-bold">EVIDENCE CATEGORIES</span>
         </div>
 
         {/* Visual Dual Streams Flowing to Central Engine */}
@@ -98,7 +98,7 @@ export default function Section03Concept() {
               </div>
               <div>
                 <h4 className="text-sm font-bold text-slate-900">STREAM A: Classroom Context</h4>
-                <span className="text-[11px] text-amber-800 font-mono font-bold">Faculty &amp; Lecture Hall Projector</span>
+                 <span className="text-[11px] text-amber-800 font-mono font-bold">Teacher session + classroom context</span>
               </div>
             </div>
 
@@ -108,16 +108,16 @@ export default function Section03Concept() {
                 <span className="text-slate-900 font-bold">SES-8491 (CS-401)</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">Rotating Challenge:</span>
-                <span className="text-amber-800 font-bold">9K4-PX2 (TTL: 14s)</span>
+                 <span className="text-slate-700 font-bold">Session State:</span>
+                 <span className="text-amber-800 font-bold">OPEN / SERVER CLOCK</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">Projection State:</span>
-                <span className="text-emerald-800 font-bold">ACTIVE IN HALL A</span>
+                 <span className="text-slate-700 font-bold">Context Evidence:</span>
+                 <span className="text-emerald-800 font-bold">PRIVATE / REVIEWABLE</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">Contextual Occupancy:</span>
-                <span className="text-slate-900 font-bold">220/240 Detected</span>
+                 <span className="text-slate-700 font-bold">Limit:</span>
+                 <span className="text-slate-900 font-bold">Not exact seat proof</span>
               </div>
             </div>
           </div>
@@ -152,16 +152,16 @@ export default function Section03Concept() {
                 <span className="text-slate-900 font-bold">STU-2024-0482</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">Challenge Input:</span>
-                <span className="text-amber-800 font-bold">9K4-PX2 (Matched)</span>
+                 <span className="text-slate-700 font-bold">Evidence Input:</span>
+                 <span className="text-amber-800 font-bold">4 guided frames + room image</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">1:1 Biometric Crop:</span>
-                <span className="text-slate-900 font-bold">112x112 Canonical</span>
+                 <span className="text-slate-700 font-bold">Identity:</span>
+                 <span className="text-slate-900 font-bold">Encrypted enrollment comparison</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-700 font-bold">Replay &amp; Freshness:</span>
-                <span className="text-emerald-800 font-bold">t+1.4s (Valid Nonce)</span>
+                 <span className="text-slate-700 font-bold">Liveness:</span>
+                 <span className="text-emerald-800 font-bold">Guided movement + blink</span>
               </div>
             </div>
           </div>
@@ -176,16 +176,16 @@ export default function Section03Concept() {
             <div>
               <div className="text-xs font-mono text-amber-900 font-bold">ATTENDANCE VERIFICATION OUTCOME</div>
               <div className="text-sm font-bold text-slate-900">
-                Multi-Evidence Check: VERIFIED (or routed to Review Queue)
+                 Multi-Evidence Check: CONFIRMED or routed to Review Queue
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="px-2.5 py-1 rounded text-xs font-mono bg-emerald-100 text-emerald-950 border border-emerald-300 font-bold">
-              Verified: 90.8%
+               Illustrative sample
             </span>
             <span className="px-2.5 py-1 rounded text-xs font-mono bg-amber-100 text-amber-950 border border-amber-300 font-bold">
-              Human Review: 5.0%
+               Reviewable outcome
             </span>
           </div>
         </div>
