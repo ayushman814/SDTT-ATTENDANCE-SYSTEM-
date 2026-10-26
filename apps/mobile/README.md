@@ -15,7 +15,7 @@ For optional local backend development, use a reachable local address, for examp
 
 ## Panorama attendance module
 
-The app also embeds the student side of the **panorama attendance** system (`apps/panorama/api` — FastAPI + OpenCV YuNet/SFace verification). Entry point: the panorama icon in the home app bar.
+The app also embeds the student side of the **panorama attendance** system (`apps/panorama/api` — FastAPI + OpenCV YuNet/SFace verification). Entry points: the "Panorama attendance" link on the login screen (works with only the panorama backend running — the main login needs the separate demo API on port 8000), and the panorama icon in the home app bar for users already signed in.
 
 - Student sign-in uses the panorama API (`POST /api/auth/login`, role `student`), then lists live attendance windows (`GET /api/student/sessions/active`) and per-course history (`GET /api/student/history`).
 - "Mark attendance" runs the same guided live capture as the web app: the front camera films the student for 8s, the app switches to the back camera, and the student sweeps ~180° across the lecturer on the podium and the class. Frames sampled every ~600ms (4 minimum, ~16s) are uploaded with the selfie to `POST /api/sessions/{id}/submit`; the server stitches them into the panorama and runs the full verification pipeline. There is no manual upload path.
