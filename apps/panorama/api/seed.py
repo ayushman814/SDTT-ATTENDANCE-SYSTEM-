@@ -52,6 +52,7 @@ def main() -> int:
     engine = FaceEngine()
     db = SessionLocal()
     try:
+        created: list[dict] = []
         prof = db.scalar(select(User).where(User.email == PROFESSOR["email"]))
         if prof is None:
             prof = User(
@@ -62,6 +63,7 @@ def main() -> int:
             )
             db.add(prof)
             db.flush()
+            created.append({"label": "professor", **PROFESSOR})
         if prof.face_embedding is None:
             prof.face_embedding = embed_face(engine, FACES / PROFESSOR["face"])
 
@@ -83,20 +85,26 @@ def main() -> int:
                 )
                 db.add(stu)
                 db.flush()
+                created.append({"label": "student", **spec})
             if stu.face_embedding is None:
                 stu.face_embedding = embed_face(engine, FACES / spec["face"])
             if not db.scalar(
                 select(Enrollment).where(
-                    Enrollment.student_id == stu.id, Enrollment.course_id == course.id
+                    Enrollment.student_id == stu.id,
+                    Enrollment.course_id == course.id,
+                    Enrollment.unenrolled_at.is_(None),
                 )
             ):
                 db.add(Enrollment(student_id=stu.id, course_id=course.id))
 
         db.commit()
         print("Seeded:")
-        print(f"  professor  {PROFESSOR['email']} / {PROFESSOR['password']}")
-        for s in STUDENTS:
-            print(f"  student    {s['email']} / {s['password']}  (roll {s['roll_no']})")
+        if created:
+            for s in created:
+                roll = f"  (roll {s['roll_no']})" if s["label"] == "student" else ""
+                print(f"  {s['label']:<10} {s['email']} / {s['password']}{roll}")
+        else:
+            print("  demo accounts already exist — credentials unchanged from first run")
         print(f"  course     CS-101 Computer Science 101 (all students enrolled)")
         return 0
     finally:

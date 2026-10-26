@@ -30,6 +30,7 @@ from ..services import (
     new_public_id,
     reason_text,
     session_out,
+    session_roster,
     submission_out,
     utcnow,
 )
@@ -180,9 +181,14 @@ def enroll_student(
             Enrollment.student_id == student.id, Enrollment.course_id == course.id
         )
     )
-    if exists is not None:
+    if exists is not None and exists.unenrolled_at is None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Student already enrolled")
-    db.add(Enrollment(student_id=student.id, course_id=course.id))
+    if exists is not None:
+        # re-enroll: restart the membership period
+        exists.enrolled_at = utcnow()
+        exists.unenrolled_at = None
+    else:
+        db.add(Enrollment(student_id=student.id, course_id=course.id))
     audit(
         db, "course.enrolled", "course", course.id, actor_id=prof.id,
         detail={"student_id": student.id, "email": student.email},
@@ -201,12 +207,15 @@ def unenroll_student(
     course = _owned_course(db, course_id, prof)
     row = db.scalar(
         select(Enrollment).where(
-            Enrollment.student_id == student_id, Enrollment.course_id == course.id
+            Enrollment.student_id == student_id,
+            Enrollment.course_id == course.id,
+            Enrollment.unenrolled_at.is_(None),
         )
     )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Student not enrolled")
-    db.delete(row)
+    # Soft delete: attendance history must keep past roster membership intact.
+    row.unenrolled_at = utcnow()
     audit(
         db, "course.unenrolled", "course", course.id, actor_id=prof.id,
         detail={"student_id": student_id},
@@ -238,7 +247,7 @@ def close_session(public_id: str, prof: User = Depends(require_professor), db: S
 def session_summary(public_id: str, prof: User = Depends(require_professor), db: Session = Depends(get_db)):
     s = _get_owned_session(db, public_id, prof)
     course = db.get(Course, s.course_id)
-    roster = enrolled_students(db, s.course_id)
+    roster = session_roster(db, s)
     latest = latest_submissions(db, s.id)
 
     present, rejected, pending = [], [], []
@@ -272,7 +281,7 @@ def session_summary(public_id: str, prof: User = Depends(require_professor), db:
 @router.get("/sessions/{public_id}/export.csv")
 def export_csv(public_id: str, prof: User = Depends(require_professor), db: Session = Depends(get_db)):
     s = _get_owned_session(db, public_id, prof)
-    roster = {u.id: u for u in enrolled_students(db, s.course_id)}
+    roster = {u.id: u for u in session_roster(db, s)}
     latest = {sub.student_id: sub for sub in latest_submissions(db, s.id)}
 
     buf = io.StringIO()

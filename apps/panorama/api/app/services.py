@@ -100,7 +100,39 @@ def latest_submissions(db: Session, session_id: int) -> list[Submission]:
 
 
 def enrolled_students(db: Session, course_id: int) -> list[User]:
-    ids = select(Enrollment.student_id).where(Enrollment.course_id == course_id)
+    """Students currently on the roster (soft-deleted enrollments excluded)."""
+    ids = select(Enrollment.student_id).where(
+        Enrollment.course_id == course_id,
+        Enrollment.unenrolled_at.is_(None),
+    )
+    return list(db.scalars(select(User).where(User.id.in_(ids))).all())
+
+
+def session_roster(db: Session, session: ClassSession) -> list[User]:
+    """Students whose enrollment covered the session's start time.
+
+    Attendance is recorded against the roster as it stood when the session
+    ran — later enrollment changes must not rewrite past summaries/exports.
+    """
+    start = session.start_time
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    rows = db.scalars(
+        select(Enrollment).where(Enrollment.course_id == session.course_id)
+    ).all()
+    ids = []
+    for e in rows:
+        # Legacy rows without a timestamp count as always enrolled.
+        ea = e.enrolled_at
+        if ea is not None and ea.tzinfo is None:
+            ea = ea.replace(tzinfo=timezone.utc)
+        ua = e.unenrolled_at
+        if ua is not None and ua.tzinfo is None:
+            ua = ua.replace(tzinfo=timezone.utc)
+        if (ea is None or ea <= start) and (ua is None or ua > start):
+            ids.append(e.student_id)
+    if not ids:
+        return []
     return list(db.scalars(select(User).where(User.id.in_(ids))).all())
 
 

@@ -23,16 +23,20 @@ def decode_image(data: bytes, max_pixels: int | None = None) -> np.ndarray:
 
     Checks the declared dimensions first: a small compressed file can decode
     to a huge bitmap (decompression bomb), so oversized uploads are rejected
-    before cv2 allocates them.
+    before cv2 allocates them. Files whose header cannot be read are rejected
+    outright — an unparseable header means the pixel bound cannot be enforced.
     """
-    if max_pixels is not None:
-        size = decoded_size(data)
-        if size is not None and size[0] * size[1] > max_pixels:
-            raise ValueError("image_too_large")
+    size = decoded_size(data)
+    if size is None:
+        raise ValueError("invalid_image")
+    if max_pixels is not None and size[0] * size[1] > max_pixels:
+        raise ValueError("image_too_large")
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None or img.size == 0:
         raise ValueError("invalid_image")
+    if max_pixels is not None and img.shape[0] * img.shape[1] > max_pixels:
+        raise ValueError("image_too_large")
     return img
 
 

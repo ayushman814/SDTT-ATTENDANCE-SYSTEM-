@@ -1,6 +1,8 @@
 """Profile, face enrollment, privacy deletion, and student history."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +31,12 @@ router = APIRouter(tags=["users"])
 FACES_DIR = UPLOAD_DIR / "faces"
 
 
+def _upload_path(url: str) -> Path:
+    """Map a stored image URL (current or legacy /uploads form) to a file under UPLOAD_DIR."""
+    parts = url.split("/")
+    return UPLOAD_DIR / parts[-2] / parts[-1]
+
+
 @router.post("/me/face", response_model=UserOut)
 def enroll_face(
     file: UploadFile = File(...),
@@ -40,7 +48,7 @@ def enroll_face(
     if len(data) > cfg()["upload"]["max_bytes"]:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
     try:
-        img = imaging.decode_image(data)
+        img = imaging.decode_image(data, max_pixels=cfg()["upload"]["max_pixels"])
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Not a readable image")
     try:
@@ -65,14 +73,14 @@ def delete_face_data(user: User = Depends(current_user), db: Session = Depends(g
     """Privacy: erase the stored embedding, reference photo, and captured selfies."""
     user.face_embedding = None
     if user.face_photo_url:
-        p = UPLOAD_DIR.parent / user.face_photo_url.removeprefix("/api/")
+        p = _upload_path(user.face_photo_url)
         if p.exists():
             p.unlink()
     user.face_photo_url = None
     # Captured selfies are part of the user's face data — remove them too.
     for sub in db.scalars(select(Submission).where(Submission.student_id == user.id)).all():
         if sub.selfie_url:
-            p = UPLOAD_DIR.parent / sub.selfie_url.removeprefix("/api/")
+            p = _upload_path(sub.selfie_url)
             if p.exists():
                 p.unlink()
             sub.selfie_url = None
@@ -88,7 +96,11 @@ def student_active_sessions(user: User = Depends(current_user), db: Session = De
     rows = db.scalars(
         select(ClassSession)
         .join(Enrollment, Enrollment.course_id == ClassSession.course_id)
-        .where(Enrollment.student_id == user.id, ClassSession.status == SessionStatus.active)
+        .where(
+            Enrollment.student_id == user.id,
+            Enrollment.unenrolled_at.is_(None),
+            ClassSession.status == SessionStatus.active,
+        )
         .order_by(ClassSession.end_time)
     ).all()
     out = []

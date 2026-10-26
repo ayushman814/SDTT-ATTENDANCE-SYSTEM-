@@ -68,6 +68,7 @@ def submit(
         select(Enrollment).where(
             Enrollment.student_id == student.id,
             Enrollment.course_id == session.course_id,
+            Enrollment.unenrolled_at.is_(None),
         )
     )
     if enrolled is None:

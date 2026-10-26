@@ -163,7 +163,15 @@ def test_session_window_and_submit(client, engine, make_frame):
 
     db = SessionLocal()
     sid = db.query(User).filter_by(email="stu2@x.edu").one().id
-    db.add(Enrollment(student_id=sid, course_id=sess["course_id"]))
+    # back-dated so the student is on the roster at the session's start time
+    from datetime import datetime, timedelta, timezone
+    db.add(
+        Enrollment(
+            student_id=sid,
+            course_id=sess["course_id"],
+            enrolled_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
     db.commit()
     db.close()
 
@@ -273,3 +281,112 @@ def test_override(client, engine, make_frame):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "present"
+
+
+def test_enrollment_flow(client):
+    """Professor-managed roster: enroll gates visibility, unenroll preserves history."""
+    prof = _register(client, "professor", "profe@x.edu").json()
+    stu = _register(client, "student", "stue@x.edu", roll_no="RE").json()
+    tp = f"Bearer {prof['access_token']}"
+    ts = f"Bearer {stu['access_token']}"
+
+    # A session on a brand-new course is invisible to unenrolled students.
+    r = client.post(
+        "/api/sessions",
+        json={"course_name": "E2E Enroll", "window_minutes": 5},
+        headers={"Authorization": tp},
+    )
+    assert r.status_code == 201
+    sess = r.json()
+    cid = sess["course_id"]
+    r = client.get("/api/student/sessions/active", headers={"Authorization": ts})
+    assert sess["public_id"] not in [s["public_id"] for s in r.json()["sessions"]]
+
+    # Enroll → visible; duplicate enroll → 409; roster lists the student.
+    r = client.post(
+        f"/api/courses/{cid}/students",
+        json={"email": "stue@x.edu"},
+        headers={"Authorization": tp},
+    )
+    assert r.status_code == 201
+    r = client.post(
+        f"/api/courses/{cid}/students",
+        json={"email": "stue@x.edu"},
+        headers={"Authorization": tp},
+    )
+    assert r.status_code == 409
+    r = client.get("/api/student/sessions/active", headers={"Authorization": ts})
+    assert sess["public_id"] in [s["public_id"] for s in r.json()["sessions"]]
+    r = client.get(f"/api/courses/{cid}/students", headers={"Authorization": tp})
+    students = r.json()["students"]
+    sid = next(s["id"] for s in students if s["email"] == "stue@x.edu")
+
+    # Session created AFTER enrollment: roster frozen at start — unenrolling
+    # must not rewrite the past summary.
+    r = client.post(
+        "/api/sessions",
+        json={"course_id": cid, "window_minutes": 5},
+        headers={"Authorization": tp},
+    )
+    past = r.json()
+    r = client.delete(f"/api/courses/{cid}/students/{sid}", headers={"Authorization": tp})
+    assert r.status_code == 204
+    r = client.get("/api/student/sessions/active", headers={"Authorization": ts})
+    assert past["public_id"] not in [s["public_id"] for s in r.json()["sessions"]]
+    r = client.get(
+        f"/api/sessions/{past['public_id']}/summary", headers={"Authorization": tp}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Was enrolled when the session started — still counted despite later unenroll.
+    assert body["enrolled_count"] == 1
+    assert body["absent_count"] == 1
+
+    # Re-enroll revives membership (history row is reused, not duplicated).
+    r = client.post(
+        f"/api/courses/{cid}/students",
+        json={"email": "stue@x.edu"},
+        headers={"Authorization": tp},
+    )
+    assert r.status_code == 201
+
+
+def test_legacy_upload_urls_rewritten(client):
+    """Additive migration rewrites pre-/api image paths to authenticated ones."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal, init_db
+    from app.models import (
+        ClassSession,
+        Role,
+        Submission,
+        SubmissionStatus,
+        User,
+    )
+
+    db = SessionLocal()
+    try:
+        stu = db.scalar(select(User).where(User.role == Role.student))
+        sess = db.scalar(select(ClassSession))
+        db.add(
+            Submission(
+                session_id=sess.id,
+                student_id=stu.id,
+                image_url="/uploads/submissions/legacy.jpg",
+                image_hash="",
+                status=SubmissionStatus.rejected,
+            )
+        )
+        stu.face_photo_url = "/uploads/faces/legacy.jpg"
+        db.commit()
+
+        init_db()  # re-runs the additive migrations
+
+        db.expire_all()
+        row = db.scalar(
+            select(Submission).where(Submission.image_url.like("%legacy.jpg"))
+        )
+        assert row.image_url == "/api/uploads/submissions/legacy.jpg"
+        assert stu.face_photo_url == "/api/uploads/faces/legacy.jpg"
+    finally:
+        db.close()
