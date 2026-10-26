@@ -73,6 +73,27 @@ def make_panorama(engine):
 
 
 @pytest.fixture(scope="session")
+def make_frame(engine):
+    """Compose one synthetic sweep frame: a face on a textured background."""
+
+    def build(face_name: str | None, size=(800, 600), face_w=220, seed=11) -> np.ndarray:
+        w, h = size
+        rng = np.random.default_rng(seed)
+        bg = rng.integers(110, 190, (h, w, 3), dtype=np.uint8)
+        bg = cv2.GaussianBlur(bg, (21, 21), 0)
+        noise = rng.integers(-25, 25, (h, w, 3), dtype=np.int16)
+        bg = np.clip(bg.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        if face_name:
+            crop = _face_crop(engine, FACES / face_name, face_w)
+            x = (w - crop.shape[1]) // 2
+            y = h - crop.shape[0] - 60
+            bg[y:y + crop.shape[0], x:x + crop.shape[1]] = crop
+        return bg
+
+    return build
+
+
+@pytest.fixture(scope="session")
 def embeddings(engine) -> dict[str, np.ndarray]:
     out = {}
     for name in ["professor", "student1", "student2", "student3", "student4", "student5"]:

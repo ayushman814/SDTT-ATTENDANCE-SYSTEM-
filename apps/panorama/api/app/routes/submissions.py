@@ -29,6 +29,7 @@ from ..vision import get_engine
 router = APIRouter(tags=["submissions"])
 
 SUBMISSIONS_DIR = UPLOAD_DIR / "submissions"
+SELFIES_DIR = UPLOAD_DIR / "selfies"
 
 
 def _embedding_of(user: User) -> np.ndarray | None:
@@ -44,7 +45,8 @@ def _embedding_of(user: User) -> np.ndarray | None:
 )
 def submit(
     public_id: str,
-    file: UploadFile = File(...),
+    selfie: UploadFile = File(...),
+    frames: list[UploadFile] = File(...),
     geo_lat: float | None = Form(default=None),
     geo_lng: float | None = Form(default=None),
     student: User = Depends(require_student),
@@ -81,25 +83,48 @@ def submit(
     if already is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Attendance already marked present")
 
-    ctype = (file.content_type or "").lower()
-    if ctype not in cfg()["upload"]["allowed_content_types"]:
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="JPEG/PNG/WebP only")
-    data = file.file.read(cfg()["upload"]["max_bytes"] + 1)
-    if len(data) > cfg()["upload"]["max_bytes"]:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
+    def _read_image(up: UploadFile, what: str) -> bytes:
+        ctype = (up.content_type or "").lower()
+        if ctype not in cfg()["upload"]["allowed_content_types"]:
+            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=f"{what}: JPEG/PNG/WebP only")
+        b = up.file.read(cfg()["upload"]["max_bytes"] + 1)
+        if len(b) > cfg()["upload"]["max_bytes"]:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"{what} too large")
+        return b
 
-    # Save the upload (metadata stripped); verification runs on the bytes.
+    # Live capture only: front-cam selfie + back-cam sweep frames, stitched
+    # server-side into the panorama. There is no manual photo upload path.
+    if len(frames) < 2:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Too few sweep frames — sweep the camera across the room")
+    if len(frames) > cfg()["upload"]["max_frames"]:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Too many frames")
+    selfie_data = _read_image(selfie, "selfie")
+    try:
+        selfie_img = imaging.decode_image(selfie_data)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Selfie is not a readable image")
+    frame_imgs = []
+    for i, f in enumerate(frames):
+        try:
+            frame_imgs.append(imaging.decode_image(_read_image(f, f"frame {i+1}")))
+        except HTTPException:
+            raise
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Sweep frame {i+1} is not a readable image")
+    pano = imaging.stitch_frames(frame_imgs)
+    data = imaging.encode_jpeg(pano)
+    img = pano
+    # Store the captured selfie alongside the panorama for audit.
+    SELFIES_DIR.mkdir(parents=True, exist_ok=True)
+    (SELFIES_DIR / f"{uuid.uuid4().hex}.jpg").write_bytes(imaging.encode_jpeg(selfie_img))
+
+    # Save the panorama (metadata stripped); verification runs on the bytes.
     SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
     fname = f"{uuid.uuid4().hex}.jpg"
     try:
         (SUBMISSIONS_DIR / fname).write_bytes(imaging.strip_metadata(data))
     except Exception:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Not a readable image")
-
-    try:
-        img = imaging.decode_image(data)
-    except ValueError:
-        img = None
 
     prof = db.get(User, session.professor_id)
     prior_hashes = list(db.scalars(select(Submission.image_hash)).all())
@@ -121,6 +146,7 @@ def submit(
             engine=get_engine(),
             cfg=cfg(),
             geo=geo,
+            selfie_bgr=selfie_img,
         )
         status_v, reason, scores = verdict.status, verdict.reason, verdict.scores
         phash = scores.get("phash", "")

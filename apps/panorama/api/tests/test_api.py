@@ -92,6 +92,20 @@ def test_duplicate_email_rejected(client):
     assert r.status_code == 409
 
 
+def _live_files(make_frame, selfie_face: str, frame_faces: list[str]):
+    """Multipart payload for the live-capture submit: selfie + sweep frames."""
+    import cv2
+
+    with open(FACES / selfie_face, "rb") as fh:
+        selfie_bytes = fh.read()
+    files = [("selfie", ("selfie.png", selfie_bytes, "image/png"))]
+    for i, name in enumerate(frame_faces):
+        ok, buf = cv2.imencode(".jpg", make_frame(name, seed=20 + i))
+        assert ok
+        files.append(("frames", (f"f{i}.jpg", buf.tobytes(), "image/jpeg")))
+    return files
+
+
 def _enroll(client, token, face="student1.png"):
     with open(FACES / face, "rb") as fh:
         return client.post(
@@ -101,7 +115,7 @@ def _enroll(client, token, face="student1.png"):
         )
 
 
-def test_session_window_and_submit(client, engine, make_panorama):
+def test_session_window_and_submit(client, engine, make_frame):
     prof = _register(client, "professor", "prof2@x.edu").json()
     stu = _register(client, "student", "stu2@x.edu", roll_no="R2").json()
     tp = prof["access_token"]
@@ -135,26 +149,22 @@ def test_session_window_and_submit(client, engine, make_panorama):
     assert r.status_code == 200
     assert any(s["public_id"] == sess["public_id"] for s in r.json()["sessions"])
 
-    # submit a real verified panorama inside the window
-    pano = make_panorama(
-        [("student1.png", 300, 280), ("student2.png", 1050, 280), ("professor.png", 1900, 300)]
-    )
-    import cv2
-    ok, buf = cv2.imencode(".jpg", pano)
-    assert ok
+    # submit a live capture: selfie + sweep frames covering lecturer + neighbours
+    files = _live_files(make_frame, "student1.png", ["professor.png", "student2.png", "student3.png"])
     r = client.post(
         f"/api/sessions/{sess['public_id']}/submit",
-        files={"file": ("pano.jpg", buf.tobytes(), "image/jpeg")},
+        files=files,
         headers={"Authorization": f"Bearer {ts}"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "present", body
+    assert body["scores"]["capture_mode"] == "live"
 
     # second submit → already present
     r = client.post(
         f"/api/sessions/{sess['public_id']}/submit",
-        files={"file": ("pano.jpg", buf.tobytes(), "image/jpeg")},
+        files=files,
         headers={"Authorization": f"Bearer {ts}"},
     )
     assert r.status_code == 409
@@ -179,7 +189,7 @@ def test_session_window_and_submit(client, engine, make_panorama):
     db.close()
     r = client.post(
         f"/api/sessions/{sess['public_id']}/submit",
-        files={"file": ("pano.jpg", buf.tobytes(), "image/jpeg")},
+        files=_live_files(make_frame, "student3.png", ["professor.png", "student1.png"]),
         headers={"Authorization": f"Bearer {ts3}"},
     )
     assert r.status_code == 403
@@ -200,7 +210,7 @@ def test_session_window_and_submit(client, engine, make_panorama):
     assert r.status_code == 404
 
 
-def test_override(client, engine, make_panorama):
+def test_override(client, engine, make_frame):
     prof = _register(client, "professor", "prof4@x.edu").json()
     stu = _register(client, "student", "stu4@x.edu", roll_no="R4").json()
     tp, ts = prof["access_token"], stu["access_token"]
@@ -221,14 +231,10 @@ def test_override(client, engine, make_panorama):
     db.commit()
     db.close()
 
-    # panorama missing the lecturer → rejected with reason
-    pano = make_panorama([("student1.png", 300, 280), ("student2.png", 1050, 280)])
-    import cv2
-    ok, buf = cv2.imencode(".jpg", pano)
-    assert ok
+    # sweep missing the lecturer → rejected with reason
     r = client.post(
         f"/api/sessions/{sess['public_id']}/submit",
-        files={"file": ("p.jpg", buf.tobytes(), "image/jpeg")},
+        files=_live_files(make_frame, "student1.png", ["student2.png", "student3.png"]),
         headers={"Authorization": f"Bearer {ts}"},
     )
     assert r.json()["status"] == "rejected"

@@ -101,9 +101,17 @@ export const api = {
   studentHistory: (token: string) =>
     request<import("./types").StudentHistory>("/api/student/history", {}, token),
 
-  submit: (token: string, publicId: string, file: File | Blob, geo?: { lat: number; lng: number }) => {
+  /** Live capture: front-cam selfie + back-cam sweep frames stitched server-side. */
+  submitLive: (
+    token: string,
+    publicId: string,
+    selfie: Blob,
+    frames: Blob[],
+    geo?: { lat: number; lng: number },
+  ) => {
     const fd = new FormData();
-    fd.append("file", file, "panorama.jpg");
+    fd.append("selfie", selfie, "selfie.jpg");
+    frames.forEach((f, i) => fd.append("frames", f, `frame-${String(i).padStart(3, "0")}.jpg`));
     if (geo) {
       fd.append("geo_lat", String(geo.lat));
       fd.append("geo_lng", String(geo.lng));

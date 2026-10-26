@@ -180,3 +180,52 @@ def test_geo_missing_when_required(make_panorama, engine, embeddings, cfg_obj):
     v = verify(good_pano(make_panorama), engine, embeddings, cfg_obj, session=s, geo=None)
     assert v.status == SubmissionStatus.rejected
     assert v.reason == "location_missing"
+
+
+# --- live-capture mode: front-cam selfie + back-cam sweep frames ---------
+
+from conftest import FACES  # noqa: E402
+
+
+def _selfie(name: str) -> np.ndarray:
+    return cv2.imread(str(FACES / name))
+
+
+def test_live_pass(make_frame, engine, embeddings, cfg_obj):
+    # selfie carries the self-identity; the sweep needs lecturer + neighbour
+    frames = [make_frame(n, seed=40 + i) for i, n in enumerate(
+        ["professor.png", "student2.png", "student3.png"])]
+    pano = imaging.stitch_frames(frames)
+    v = verify(pano, engine, embeddings, cfg_obj, selfie_bgr=_selfie("student1.png"))
+    assert v.status == SubmissionStatus.present
+    assert v.scores["capture_mode"] == "live"
+    assert v.scores["self_similarity"] > 0.4
+    assert v.scores["neighbours_found"] >= 1
+
+
+def test_live_lecturer_not_found(make_frame, engine, embeddings, cfg_obj):
+    frames = [make_frame(n, seed=50 + i) for i, n in enumerate(["student2.png", "student3.png"])]
+    pano = imaging.stitch_frames(frames)
+    v = verify(pano, engine, embeddings, cfg_obj, selfie_bgr=_selfie("student1.png"))
+    assert v.status == SubmissionStatus.rejected
+    assert v.reason == "lecturer_not_found"
+
+
+def test_live_self_not_found(make_frame, engine, embeddings, cfg_obj):
+    # the selfie belongs to the professor, not to student1
+    frames = [make_frame(n, seed=60 + i) for i, n in enumerate(
+        ["professor.png", "student2.png"])]
+    pano = imaging.stitch_frames(frames)
+    v = verify(pano, engine, embeddings, cfg_obj, selfie_bgr=_selfie("professor.png"))
+    assert v.status == SubmissionStatus.rejected
+    assert v.reason == "self_not_found"
+
+
+def test_live_blurry_selfie_rejected(make_frame, engine, embeddings, cfg_obj):
+    frames = [make_frame(n, seed=70 + i) for i, n in enumerate(
+        ["professor.png", "student2.png"])]
+    pano = imaging.stitch_frames(frames)
+    blurry = cv2.GaussianBlur(_selfie("student1.png"), (41, 41), 0)
+    v = verify(pano, engine, embeddings, cfg_obj, selfie_bgr=blurry)
+    assert v.status == SubmissionStatus.rejected
+    assert v.reason == "image_too_blurry"

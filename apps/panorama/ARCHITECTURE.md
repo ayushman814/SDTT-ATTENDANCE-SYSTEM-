@@ -27,9 +27,13 @@ apps/panorama/api  (FastAPI + SQLAlchemy + OpenCV)
 3. Professor starts a session: server stamps `start_time`/`end_time` from its
    own clock. `maybe_close` flips status to `closed` on any read once expired,
    so the window cannot be extended client-side.
-4. Student uploads a panorama (`POST /sessions/{id}/submit`, multipart). The
-   server re-checks the window before saving, then runs the pipeline
-   synchronously and stores status + reason + a scores JSON of every metric.
+4. Student marks attendance with the camera only — there is no file upload.
+   The app films the student on the front camera for 8 seconds (the selfie),
+   switches to the back camera, and guides a ~180° sweep across the room while
+   sampling frames. `POST /sessions/{id}/submit` takes `selfie` + `frames[]`;
+   the server stitches the frames (`cv2.Stitcher`, with a height-normalized
+   concat fallback) into the panorama, re-checks the window, and runs the
+   pipeline. The selfie is stored alongside for audit.
 5. Professor's dashboard polls `GET /sessions/{id}/summary` every ~2 s: the
    newest submission per student is the standing verdict; roster minus
    present = absent. `PATCH /submissions/{id}/override` resolves
@@ -46,10 +50,11 @@ apps/panorama/api  (FastAPI + SQLAlchemy + OpenCV)
 | 4 | Laplacian variance ≥ `blur_min_variance` (60) | `image_too_blurry` | — |
 | 5 | EXIF DateTimeOriginal, if present, ≤ 30 min old | `stale_capture` | — |
 | 6 | FFT peak/median in HF ring ≤ `moire_peak_ratio_max` (500) | — | `screen_moire_suspect` |
+| 6b | Live selfie: blur + moire floors | `image_too_blurry` | `screen_moire_suspect` |
 | 7 | ≥1 face detected (YuNet score ≥ 0.6) | `no_face_detected` | — |
-| 8 | Best cosine similarity to the student's embedding ≥ `self_match_threshold` | `self_not_found` | `self_match_borderline` (within `review_margin` below) |
+| 8 | Self cosine similarity ≥ `self_match_threshold` — measured on the front-cam selfie in live mode, else the panorama | `self_not_found` | `self_match_borderline` (within `review_margin` below) |
 | 9 | Best similarity to the professor's embedding (other faces) ≥ `lecturer_match_threshold` | `lecturer_not_found` | `lecturer_match_borderline` |
-| 10 | ≥ `min_neighbours` faces within `neighbour_min/max_fraction` of the student's face, excluding self/lecturer matches and self-duplicates | `no_neighbouring_student` | — |
+| 10 | ≥ `min_neighbours` other faces in the sweep — anchored within `neighbour_min/max_fraction` of the student's face when the student is also in the panorama, otherwise any distinct face that is neither the lecturer nor the student | `no_neighbouring_student` | — |
 | 11 | If the professor enabled geofence: haversine ≤ `geo_radius_m` | `location_missing` / `out_of_range` | — |
 
 Pass all → `present`. Every score is persisted on the submission for audit.
@@ -80,9 +85,16 @@ Pass all → `present`. Every score is persisted on the submission for audit.
 
 ## Honest limits
 
-- The "180° sweep" is approximated by panorama ratio + lecturer presence, not
-  by measuring camera yaw (impossible from a still image). Documented in the
-  student-facing guide.
+- The "180° sweep" is enforced by the multi-frame capture + stitched-image
+  ratio, not by measuring camera yaw — a very fast or partial sweep still
+  produces a usable wide image (concat fallback), but a sweep missing the
+  lecturer or any neighbour fails verification by design.
+- `cv2.Stitcher` needs overlapping textured frames; when it fails the
+  height-normalized concat preserves every face at full size, at the cost of
+  repeated-background seams (harmless to detection). Self-duplicate faces in
+  the sweep are excluded via the self-match threshold.
+- Desktops have no back camera: the `environment` facingMode gracefully falls
+  back to the same device, so the flow still works in development.
 - Spoof checks are heuristics: a printed photo held to the camera can still
   pass; that is why flagged submissions go to PENDING_REVIEW rather than an
   auto-ban.

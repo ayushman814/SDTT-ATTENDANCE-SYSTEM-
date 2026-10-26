@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
 import { api, ApiError } from "../api";
 import type { ActiveSession, StudentHistory } from "../types";
 import Header from "../components/Header";
 import Countdown from "../components/Countdown";
 import StatusBadge from "../components/StatusBadge";
-import CameraCapture from "../components/CameraCapture";
+import LiveCapture from "../components/LiveCapture";
 
 export default function StudentHome() {
   const { token } = useAuth();
@@ -105,10 +105,7 @@ function SessionCard({
   onError: (e: string | null) => void;
 }) {
   const { token } = useAuth();
-  const fileRef = useRef<HTMLInputElement>(null);
   const [camera, setCamera] = useState(false);
-  const [file, setFile] = useState<Blob | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(session.my_status);
   const [reason, setReason] = useState<string | null>(session.my_reason);
@@ -119,8 +116,9 @@ function SessionCard({
     setReason(session.my_reason);
   }, [session.my_status, session.my_reason]);
 
-  async function submit() {
-    if (!file || !token) return;
+  async function submit(selfie: Blob, frames: Blob[]) {
+    if (!token) return;
+    setCamera(false);
     setBusy(true);
     onError(null);
     try {
@@ -131,7 +129,7 @@ function SessionCard({
         ).catch(() => null);
         if (pos) geo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
       }
-      const sub = await api.submit(token, session.public_id, file, geo);
+      const sub = await api.submitLive(token, session.public_id, selfie, frames, geo);
       setStatus(sub.status);
       setReason(sub.reason);
       onDone();
@@ -163,66 +161,24 @@ function SessionCard({
       )}
 
       <div className="mt-4 rounded-xl bg-teal-50/60 p-4">
-        <p className="text-sm font-medium text-teal-900">How to take the panorama</p>
+        <p className="text-sm font-medium text-teal-900">How marking attendance works</p>
         <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-sm text-teal-800">
-          <li>Stay in your seat with the people beside you in frame.</li>
-          <li>Use your camera's panorama mode and sweep slowly across the room.</li>
-          <li>Keep sweeping until the lecturer at the front is visible in the shot.</li>
+          <li>The front camera watches you for 8 seconds — hold still.</li>
+          <li>It then switches to the back camera: slowly sweep ~180° across the room.</li>
+          <li>Cover the lecturer on the podium and the students beside you.</li>
         </ol>
       </div>
 
-      {preview && (
-        <img src={preview} alt="panorama preview" className="mt-4 w-full rounded-xl object-cover" />
-      )}
-
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={!windowOpen}
-          className="rounded-xl border border-slate-300 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-        >
-          Upload panorama
-        </button>
-        <button
-          onClick={() => setCamera(true)}
-          disabled={!windowOpen}
-          className="rounded-xl border border-slate-300 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-        >
-          Take photo
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) {
-              setFile(f);
-              setPreview(URL.createObjectURL(f));
-            }
-          }}
-        />
-      </div>
       <button
-        onClick={submit}
-        disabled={!file || !windowOpen || busy || status === "present"}
-        className="mt-3 w-full rounded-xl bg-teal-700 py-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+        onClick={() => setCamera(true)}
+        disabled={!windowOpen || busy || status === "present"}
+        className="mt-4 w-full rounded-xl bg-teal-700 py-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
       >
-        {busy ? "Verifying…" : status === "present" ? "Attendance marked" : "Mark attendance"}
+        {busy ? "Verifying…" : status === "present" ? "Attendance marked" : "Mark attendance (camera)"}
       </button>
       {!windowOpen && <p className="mt-2 text-center text-xs text-red-600">Window closed</p>}
 
-      {camera && (
-        <CameraCapture
-          onCapture={(b) => {
-            setCamera(false);
-            setFile(b);
-            setPreview(URL.createObjectURL(b));
-          }}
-          onClose={() => setCamera(false)}
-        />
-      )}
+      {camera && <LiveCapture onDone={submit} onClose={() => setCamera(false)} />}
     </div>
   );
 }

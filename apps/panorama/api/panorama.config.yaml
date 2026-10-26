@@ -24,6 +24,7 @@ anti_spoof:
 
 upload:
   max_bytes: 15728640               # 15 MiB hard cap on panorama uploads
+  max_frames: 40                    # cap on live-capture sweep frames per submission
   allowed_content_types: ["image/jpeg", "image/png", "image/webp"]
 
 geo:

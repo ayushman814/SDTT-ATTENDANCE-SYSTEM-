@@ -31,8 +31,10 @@ file: `panorama.config.yaml`.
   `GET /api/sessions/{id}/summary`, `POST /api/sessions/{id}/close`,
   `GET /api/sessions/{id}/export.csv`, `PATCH /api/submissions/{id}/override`.
 - Student: `GET /api/student/sessions/active`, `POST
-  /api/sessions/{id}/submit` (multipart `file`, optional `geo_lat`/`geo_lng`),
-  `GET /api/student/history`.
+  /api/sessions/{id}/submit` (multipart `selfie` + repeated `frames` fields —
+  live capture only, no manual file upload; optional `geo_lat`/`geo_lng`),
+  `GET /api/student/history`. Sweep frames are stitched server-side
+  (`cv2.Stitcher` with a concat fallback).
 - Server time is authoritative everywhere; uploads outside the window are
   refused (403 `window_closed`).
 

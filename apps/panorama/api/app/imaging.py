@@ -83,3 +83,42 @@ def strip_metadata(data: bytes, fmt: str = "JPEG") -> bytes:
     out = io.BytesIO()
     img.save(out, format=fmt, quality=92)
     return out.getvalue()
+
+
+def stitch_frames(frames: list[np.ndarray], target_h: int = 640) -> np.ndarray:
+    """Turn camera sweep frames into one panorama image.
+
+    Tries cv2.Stitcher (proper panorama registration) first; when it fails —
+    which is common with sparse/lofi frames — falls back to a horizontal
+    concat of the frames normalized to a common height, which still gives a
+    wide sweep image the face pipeline can verify.
+    """
+    if not frames:
+        raise ValueError("no frames")
+    if len(frames) == 1:
+        return frames[0]
+
+    scaled = []
+    for f in frames:
+        h, w = f.shape[:2]
+        s = target_h / h
+        scaled.append(cv2.resize(f, (max(1, int(w * s)), target_h)))
+    try:
+        stitcher = cv2.Stitcher.create(cv2.Stitcher_SCANS)
+        ok, pano = stitcher.stitch(scaled)
+        # A genuine sweep stitches wide; a near-square result means the frames
+        # barely moved — concat so the pipeline's ratio check reflects that.
+        if ok == cv2.Stitcher_OK and pano is not None and pano.size:
+            h, w = pano.shape[:2]
+            if w / max(h, 1) >= 1.8:
+                return pano
+    except Exception:
+        pass
+    return cv2.hconcat(scaled)
+
+
+def encode_jpeg(img_bgr: np.ndarray, quality: int = 90) -> bytes:
+    ok, buf = cv2.imencode(".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise ValueError("encode_failed")
+    return buf.tobytes()

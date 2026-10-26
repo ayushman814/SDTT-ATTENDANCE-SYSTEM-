@@ -83,6 +83,7 @@ def verify_submission(
     cfg: dict,
     geo: tuple[float, float] | None = None,
     now: datetime | None = None,
+    selfie_bgr: np.ndarray | None = None,
 ) -> Verdict:
     now = now or datetime.now(timezone.utc)
     vcfg = cfg["verification"]
@@ -111,6 +112,8 @@ def verify_submission(
     scores["phash"] = phash
     min_dist = None
     for old in prior_hashes:
+        if not old:
+            continue
         d = imaging.hamming(phash, old)
         min_dist = d if min_dist is None else min(min_dist, d)
     scores["phash_min_distance"] = min_dist
@@ -139,31 +142,62 @@ def verify_submission(
     if moire > spoof["moire_peak_ratio_max"]:
         return _review("screen_moire_suspect", scores)
 
-    # 7 — Face detection
-    faces = engine.detect(image_bgr)
-    scores["faces_detected"] = len(faces)
-    if not faces:
-        return _fail("no_face_detected", scores)
-
     self_thr = vcfg["self_match_threshold"]
     lec_thr = vcfg["lecturer_match_threshold"]
     margin = vcfg["review_margin"]
 
-    # 8 — Self identity
+    # 6b — Live-capture selfie: anti-spoof + the self-identity anchor.
+    #      (live mode: front-cam frame, so the student need not be in the sweep)
     self_face: Face | None = None
     self_sim = -1.0
-    if student_embedding is not None:
+    if selfie_bgr is not None:
+        scores["selfie_blur_variance"] = round(imaging.blur_variance(selfie_bgr), 2)
+        if scores["selfie_blur_variance"] < spoof["blur_min_variance"]:
+            return _fail("image_too_blurry", scores)
+        scores["selfie_moire_score"] = round(imaging.moire_score(selfie_bgr), 4)
+        if scores["selfie_moire_score"] > spoof["moire_peak_ratio_max"]:
+            return _review("screen_moire_suspect", scores)
+        selfie_faces = engine.detect(selfie_bgr)
+        scores["selfie_faces_detected"] = len(selfie_faces)
+        if student_embedding is not None:
+            for f in selfie_faces:
+                s = engine.cosine(f.embedding, student_embedding)
+                if s > self_sim:
+                    self_sim = s
+    scores["capture_mode"] = "live" if selfie_bgr is not None else "upload"
+
+    # 7 — Face detection on the panorama
+    faces = engine.detect(image_bgr)
+    scores["faces_detected"] = len(faces)
+    if not faces and selfie_bgr is None:
+        return _fail("no_face_detected", scores)
+
+    # 8 — Self identity: from the selfie in live mode, else from the panorama
+    if selfie_bgr is None and student_embedding is not None:
         for f in faces:
             s = engine.cosine(f.embedding, student_embedding)
             if s > self_sim:
                 self_sim, self_face = s, f
+    elif selfie_bgr is None:
+        self_face = None
+    else:
+        # live mode: locate a self-matching face in the sweep too, if present
+        # (student may appear in their own panorama) — used as the neighbour anchor
+        best = (-1.0, None)
+        if student_embedding is not None:
+            for f in faces:
+                s = engine.cosine(f.embedding, student_embedding)
+                if s > best[0]:
+                    best = (s, f)
+        if best[1] is not None and best[0] >= self_thr:
+            self_face = best[1]
     scores["self_similarity"] = round(self_sim, 4)
-    if self_face is None or self_sim < self_thr - margin:
+    if self_sim < self_thr - margin:
         return _fail("self_not_found", scores)
     if self_sim < self_thr:
         return _review("self_match_borderline", scores)
 
-    # 9 — Lecturer in frame
+    # 9 — Lecturer in the panorama
     lec_face: Face | None = None
     lec_sim = -1.0
     if professor_embedding is not None:
@@ -179,17 +213,21 @@ def verify_submission(
     if lec_sim < lec_thr:
         return _review("lecturer_match_borderline", scores)
 
-    # 10 — Neighbouring student(s): other faces adjacent to the student,
-    #      not the lecturer and not a duplicate of the student's own face.
-    sx, _ = self_face.center
+    # 10 — Neighbouring student(s): other faces, not the lecturer and not a
+    #      duplicate of the student's own face. In upload mode they must sit
+    #      beside the student's face; in live mode (self comes from the selfie)
+    #      any additional distinct face counts, anchored to the self face when
+    #      the student is also visible in the sweep.
+    sx = self_face.center[0] if self_face is not None else None
     neighbours = 0
     for f in faces:
         if f is self_face or f is lec_face:
             continue
-        fx, _ = f.center
-        dist_frac = abs(fx - sx) / w
-        if not (vcfg["neighbour_min_fraction"] <= dist_frac <= vcfg["neighbour_max_fraction"]):
-            continue
+        if sx is not None:
+            fx, _ = f.center
+            dist_frac = abs(fx - sx) / w
+            if not (vcfg["neighbour_min_fraction"] <= dist_frac <= vcfg["neighbour_max_fraction"]):
+                continue
         if student_embedding is not None and engine.cosine(f.embedding, student_embedding) >= self_thr:
             continue  # it's the same person photographed twice — not a neighbour
         neighbours += 1
