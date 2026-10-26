@@ -48,6 +48,24 @@ def embed_face(engine: FaceEngine, path: Path) -> bytes:
 
 
 def main() -> int:
+    # --if-empty: launcher mode. Seed only a *fresh local* database — resolved
+    # through app.config so .env is honored. Any existing user, or a non-SQLite
+    # URL (Supabase/Postgres), means skip: re-seeding would resurrect deleted
+    # face data, undo professor un-enrollments, or write demo accounts to
+    # production. Checked BEFORE FaceEngine loads the models so the skip works
+    # even where model files are absent.
+    if "--if-empty" in sys.argv:
+        from app.config import DATABASE_URL  # noqa: PLC0415
+
+        if not DATABASE_URL.startswith("sqlite"):
+            print("seed skipped: PANORAMA_DATABASE_URL points at an external database")
+            return 0
+        init_db()
+        with SessionLocal() as probe:
+            if probe.scalar(select(User.id).limit(1)) is not None:
+                print("seed skipped: users already exist — existing data preserved")
+                return 0
+
     init_db()
     engine = FaceEngine()
     db = SessionLocal()

@@ -31,13 +31,12 @@ if [ ! -f models/face_detection_yunet_2023mar.onnx ]; then
 fi
 
 # --- Demo data ---------------------------------------------------------------
-# seed.py is idempotent: it only creates accounts that don't exist yet, so run
-# it every local start — an existing-but-empty panorama.db still gets its demo
-# users. Skipped when an external DB (Supabase/Postgres) is configured.
-if [ "${PANORAMA_DATABASE_URL:-}" = "" ]; then
-  echo "[backend] seeding demo users (prof@demo.edu / prof12345, student1..5@demo.edu / student123)..."
-  .venv/bin/python seed.py
-fi
+# --if-empty puts the decision inside Python: it resolves PANORAMA_DATABASE_URL
+# through app.config (so .env counts, not just exported vars) and only seeds a
+# LOCAL sqlite DB with zero users — so restarts can't resurrect deleted face
+# data or undo un-enrollments, and an external DB is never seeded.
+echo "[backend] seeding demo users if the local database is empty..."
+.venv/bin/python seed.py --if-empty
 
 # --- Defaults for local development -----------------------------------------
 # Random per-run values, NOT published constants: this API is bound to the LAN
@@ -52,9 +51,13 @@ fi
 export PANORAMA_JWT_SECRET
 if [ -z "${PANORAMA_PROFESSOR_INVITE_CODE:-}" ]; then
   PANORAMA_PROFESSOR_INVITE_CODE="$(rand_hex)"
+  # Only printed when WE generated it — an operator-supplied code is a
+  # persistent credential and must not land in logs.
+  echo "[backend] professor invite code (this run only): $PANORAMA_PROFESSOR_INVITE_CODE"
+else
+  echo "[backend] professor invite code: (from environment, not shown)"
 fi
 export PANORAMA_PROFESSOR_INVITE_CODE
-echo "[backend] professor invite code: $PANORAMA_PROFESSOR_INVITE_CODE"
 export PANORAMA_CORS_ORIGINS="${PANORAMA_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}"
 
 # --- Network info for the Flutter app ---------------------------------------
